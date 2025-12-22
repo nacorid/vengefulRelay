@@ -4,16 +4,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	lnsocket "github.com/jb55/lnsocket/go"
 	"github.com/tidwall/gjson"
 )
 
-func generateLabel(pubkey string) string { return fmt.Sprintf("relayer-expensive:ticket:%s", pubkey) }
+func generateLabel(name, pubkey string) string {
+	return fmt.Sprintf("%s:ticket:%s", strings.ToLower(strings.ReplaceAll(name, " ", "-")), pubkey)
+}
 
 func generateInvoice(r *Relay, pubkey string) (string, error) {
-	label := generateLabel(pubkey)
+	label := generateLabel(r.RelayName, pubkey)
 	cln := lnsocket.LNSocket{}
 	cln.GenKey()
 
@@ -53,12 +56,13 @@ func generateInvoice(r *Relay, pubkey string) (string, error) {
 
 	resErr := gjson.Get(result, "error")
 	if resErr.Type != gjson.Null {
-		if resErr.Type == gjson.JSON {
+		switch resErr.Type {
+		case gjson.JSON:
 			return "", errors.New(resErr.Get("message").String())
-		} else if resErr.Type == gjson.String {
+		case gjson.String:
 			return "", errors.New(resErr.String())
 		}
-		return "", fmt.Errorf("nnknown commando error: '%v'", resErr)
+		return "", fmt.Errorf("unknown command error: '%v'", resErr)
 	}
 
 	invoice := gjson.Get(result, "result.bolt11")
@@ -80,7 +84,7 @@ func checkInvoicePaidOk(r *Relay, pubkey string) bool {
 	defer cln.Disconnect()
 
 	jparams, _ := json.Marshal(map[string]any{
-		"label": generateLabel(pubkey),
+		"label": generateLabel(r.RelayName, pubkey),
 	})
 	result, _ := cln.Rpc(r.CLNRune, "listinvoices", string(jparams))
 

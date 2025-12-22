@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
+	"os"
+	"slices"
 	"time"
 
 	"github.com/fiatjaf/eventstore"
@@ -15,6 +17,8 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/nbd-wtf/go-nostr"
 )
+
+var _ relayer.Relay = (*Relay)(nil)
 
 type Relay struct {
 	PostgresDatabase      string   `required:"true" envconfig:"POSTGRESQL_DATABASE"`
@@ -63,17 +67,14 @@ func (r *Relay) Init() error {
 	return nil
 }
 
-func (r *Relay) AcceptEvent(ctx context.Context, evt *nostr.Event) bool {
+func (r *Relay) AcceptEvent(ctx context.Context, evt *nostr.Event) (bool, string) {
 	accept := false
 	if r.FreeRelay {
 		accept = true
 	} else {
 		// allow whitelisted pubkeys
-		for _, pubkey := range r.Whitelist {
-			if pubkey == evt.PubKey {
-				accept = true
-				break
-			}
+		if slices.Contains(r.Whitelist, evt.PubKey) {
+			accept = true
 		}
 	}
 	if !accept {
@@ -81,27 +82,36 @@ func (r *Relay) AcceptEvent(ctx context.Context, evt *nostr.Event) bool {
 	}
 	// block events that are too large
 	jsonb, _ := json.Marshal(evt)
-	return accept && len(jsonb) <= r.MaxEventLength
+	if len(jsonb) > r.MaxEventLength {
+		return false, "event too large"
+	}
+	if !accept {
+		return false, "payment required"
+	}
+	return true, ""
 }
 
 func main() {
+	logger := slog.Default()
 	r := Relay{}
 	if err := envconfig.Process("", &r); err != nil {
-		log.Fatalf("failed to read from env: %v", err)
-		return
+		logger.Error("failed to read from env", "error", err)
+		os.Exit(1)
 	}
 	if r.DeleteEventsOlderThan < 0 && r.DeleteOldEvents {
-		log.Fatalf("cannot delete events from the future")
-		return
+		logger.Error("cannot delete events from the future")
+		os.Exit(1)
 	}
 	if r.MaxEventLength <= 0 {
-		log.Fatalf("cannot accept events with length <= 0")
-		return
+		logger.Error("cannot accept events with length <= 0")
+		os.Exit(1)
 	}
+
 	r.storage = &postgresql.PostgresBackend{DatabaseURL: r.PostgresDatabase}
 	server, err := relayer.NewServer(&r)
 	if err != nil {
-		log.Fatalf("failed to create server: %v", err)
+		logger.Error("failed to create server", "error", err)
+		os.Exit(1)
 	}
 	// special handlers
 	server.Router().HandleFunc("/", handleWebpage)
@@ -109,6 +119,6 @@ func main() {
 		handleInvoice(w, rq, &r)
 	})
 	if err := server.Start(r.ListeningAddress, r.Port); err != nil {
-		log.Fatalf("server terminated: %v", err)
+		logger.Error("server terminated", "error", err)
 	}
 }
