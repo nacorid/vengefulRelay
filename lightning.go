@@ -15,7 +15,7 @@ func generateLabel(name, pubkey string) string {
 	return fmt.Sprintf("%s:ticket:%s", strings.ToLower(strings.ReplaceAll(name, " ", "-")), pubkey)
 }
 
-func generateInvoice(r *Relay, pubkey string) (string, error) {
+func generateLightningInvoice(r *Relay, pubkey string) (string, error) {
 	label := generateLabel(r.RelayName, pubkey)
 	cln := lnsocket.LNSocket{}
 	cln.GenKey()
@@ -73,7 +73,7 @@ func generateInvoice(r *Relay, pubkey string) (string, error) {
 	return invoice.String(), nil
 }
 
-func checkInvoicePaidOk(r *Relay, pubkey string) bool {
+func checkLndInvoicePaidOk(r *Relay, pubkey string) bool {
 	cln := lnsocket.LNSocket{}
 	cln.GenKey()
 
@@ -88,5 +88,26 @@ func checkInvoicePaidOk(r *Relay, pubkey string) bool {
 	})
 	result, _ := cln.Rpc(r.CLNRune, "listinvoices", string(jparams))
 
-	return gjson.Get(result, "result.invoices.0.status").String() == "paid"
+	paid := gjson.Get(result, "result.invoices.0.status").String() == "paid"
+	if !paid {
+		return false
+	}
+
+	txid := gjson.Get(result, "result.invoices.0.pay_index").String()
+	if txid == "" {
+		txid = gjson.Get(result, "result.invoices.0.payment_hash").String()
+	}
+	msatReceived := gjson.Get(result, "result.invoices.0.amount_received_msat").String()
+	asset := "BTC"
+	network := "lightning"
+	// We don't care about the success of saving the invoice payment, only that it's paid
+	_, _ = r.storage.Exec(
+		"INSERT INTO invoices_paid (pubkey, transaction_id, asset, amount, network) VALUES ($1, $2)",
+		pubkey,
+		txid,
+		asset,
+		msatReceived,
+		network,
+	)
+	return true
 }
