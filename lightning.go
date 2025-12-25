@@ -102,7 +102,7 @@ func checkLndInvoicePaidOk(r *Relay, pubkey string) bool {
 	network := "lightning"
 	// We don't care about the success of saving the invoice payment, only that it's paid
 	_, _ = r.storage.Exec(
-		"INSERT INTO invoices_paid (pubkey, transaction_id, asset, amount, network) VALUES ($1, $2)",
+		"INSERT INTO invoices_paid (pubkey, transaction_id, asset, amount, network) VALUES ($1, $2, $3, $4, $5)",
 		pubkey,
 		txid,
 		asset,
