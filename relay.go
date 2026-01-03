@@ -30,6 +30,11 @@ type Relay struct {
 	CLNHost               string   `envconfig:"CLN_HOST"`
 	CLNRune               string   `envconfig:"CLN_RUNE"`
 	TicketPriceSats       int64    `envconfig:"TICKET_PRICE_SATS"`
+	CDPAPIKeyName         string   `envconfig:"CDP_API_KEY_NAME"`
+	CDPAPIKeySecret       string   `envconfig:"CDP_API_KEY_SECRET"`
+	EVMWallet             string   `envconfig:"EVM_WALLET"`
+	SVMWallet             string   `envconfig:"SVM_WALLET"`
+	CDPClientKey          string   `envconfig:"CDP_CLIENT_KEY"`
 
 	storage *postgresql.PostgresBackend
 }

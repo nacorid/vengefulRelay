@@ -66,3 +66,25 @@ func handleInvoice(w http.ResponseWriter, rq *http.Request, r *Relay) {
 		}{invoice})
 	}
 }
+
+type X402Handler struct {
+	Relay *Relay
+}
+
+func (x *X402Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	handleX402Invoice(w, r, x.Relay)
+}
+func handleX402Invoice(w http.ResponseWriter, rq *http.Request, r *Relay) {
+	pubkey := rq.URL.Query().Get("pubkey")
+	if pubkey != "" {
+		alreadyPaid := checkInvoicePaidOk(rq.Context(), r.storage, pubkey)
+		if alreadyPaid {
+			w.WriteHeader(400)
+			w.Write([]byte(`already paid`))
+		}
+	} else {
+		w.WriteHeader(400)
+		w.Write([]byte(`pubkey must not be empty`))
+	}
+	w.Write([]byte(`OK`))
+}
