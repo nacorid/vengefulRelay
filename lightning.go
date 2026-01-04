@@ -93,21 +93,20 @@ func checkLndInvoicePaidOk(r *Relay, pubkey string) bool {
 		return false
 	}
 
-	txid := gjson.Get(result, "result.invoices.0.pay_index").String()
-	if txid == "" {
-		txid = gjson.Get(result, "result.invoices.0.payment_hash").String()
-	}
+	txid := gjson.Get(result, "result.invoices.0.payment_hash").String()
 	msatReceived := gjson.Get(result, "result.invoices.0.amount_received_msat").String()
+	payer := pubkey
 	asset := "BTC"
 	network := "lightning"
 	// We don't care about the success of saving the invoice payment, only that it's paid
 	_, _ = r.storage.Exec(
-		"INSERT INTO invoices_paid (pubkey, transaction_id, asset, amount, network) VALUES ($1, $2, $3, $4, $5)",
+		"INSERT INTO invoices_paid (pubkey, transaction_id, asset, amount, network, payer) VALUES ($1, $2, $3, $4, $5, $6)",
 		pubkey,
 		txid,
 		asset,
 		msatReceived,
 		network,
+		payer,
 	)
 	return true
 }

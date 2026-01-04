@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -115,7 +117,7 @@ func main() {
 
 	x402mw := PaymentMiddlewareFromConfig(routes, WithFacilitatorClient(x402Facilitator),
 		WithScheme(evmNetwork, evm.NewExactEvmScheme()), WithScheme(svmNetwork, svm.NewExactSvmScheme()),
-		WithPaywallConfig(x402pw), WithSettlementHandler(saveSettlement))
+		WithPaywallConfig(x402pw), WithSettlementHandler(func(w http.ResponseWriter, rq *http.Request, s *x402.SettleResponse) { saveSettlement(w, rq, s, &r) }))
 
 	x402Handler := X402Handler{Relay: &r}
 	// special handlers
@@ -133,6 +135,35 @@ func getUSDCPrice() string {
 	return "$0.50"
 }
 
-func saveSettlement(w http.ResponseWriter, r *http.Request, s *x402.SettleResponse) {
+func saveSettlement(w http.ResponseWriter, rq *http.Request, s *x402.SettleResponse, r *Relay) {
+	logger := slog.Default()
+	signature := rq.Header.Get("PAYMENT-SIGNATURE")
+	if signature == "" {
+		logger.Error("unexpected state", "error", "successfull settlement response without payment signature")
+	}
+	pubkey := rq.URL.Query().Get("pubkey")
+	requirement := parsePaymentPayload(signature)
+	_, _ = r.storage.Exec(
+		"INSERT INTO invoices_paid (pubkey, transaction_id, asset, amount, network, payer) VALUES ($1, $2, $3, $4, $5, $6)",
+		pubkey,
+		s.Transaction,
+		requirement.Asset,
+		requirement.Amount,
+		s.Network,
+		s.Payer,
+	)
+}
 
+func parsePaymentPayload(header string) x402.PaymentRequirements {
+	logger := slog.Default()
+	bytes, err := base64.StdEncoding.DecodeString(header)
+	if err != nil {
+		logger.Error("failed to decode payment header", "error", err)
+	}
+	var payload *x402.PaymentPayload
+	err = json.Unmarshal(bytes, &payload)
+	if err != nil {
+		logger.Error("failed to parse payment payload", "error", err)
+	}
+	return payload.Accepted
 }

@@ -59,7 +59,8 @@ func (r *Relay) Init() error {
   			transaction_id text NOT NULL,
 			asset text NOT NULL,
 			amount text NOT NULL,
-			network text NOT NULL
+			network text NOT NULL,
+			payer text not NULL
 		);
 	`)
 
