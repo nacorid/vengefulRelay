@@ -7,6 +7,7 @@ require (
 	github.com/fiatjaf/eventstore v0.17.2
 	github.com/fiatjaf/relayer/v2 v2.2.7
 	github.com/jb55/lnsocket/go v0.0.0-20230807153023-0fad35b1352d
+	github.com/joho/godotenv v1.5.1
 	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/lib/pq v1.10.9
 	github.com/mark3labs/x402-go v0.12.1

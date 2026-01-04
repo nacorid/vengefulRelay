@@ -14,6 +14,7 @@ import (
 	svm "github.com/coinbase/x402/go/mechanisms/svm/exact/server"
 	"github.com/fiatjaf/eventstore/postgresql"
 	"github.com/fiatjaf/relayer/v2"
+	"github.com/joho/godotenv"
 	"github.com/kelseyhightower/envconfig"
 	_ "github.com/lib/pq"
 	"github.com/mark3labs/x402-go/signers/coinbase"
@@ -60,6 +61,7 @@ func (a *auth) GetAuthHeaders(ctx context.Context) (x402http.AuthHeaders, error)
 
 func main() {
 	logger := slog.Default()
+	godotenv.Load()
 	r := Relay{}
 	if err := envconfig.Process("", &r); err != nil {
 		logger.Error("failed to read from env", "error", err)
@@ -125,7 +127,7 @@ func main() {
 	server.Router().HandleFunc("/invoice", func(w http.ResponseWriter, rq *http.Request) {
 		handleInvoice(w, rq, &r)
 	})
-	server.Router().HandleFunc("admission", x402mw(&x402Handler))
+	server.Router().HandleFunc("/admission", x402mw(&x402Handler))
 	if err := server.Start(r.ListeningAddress, r.Port); err != nil {
 		logger.Error("server terminated", "error", err)
 	}
