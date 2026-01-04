@@ -19,7 +19,7 @@ var _ relayer.Relay = (*Relay)(nil)
 type Relay struct {
 	PostgresDatabase      string   `required:"true" envconfig:"POSTGRESQL_DATABASE"`
 	RelayName             string   `default:"Vengeful Relay" envconfig:"RELAY_NAME"`
-	ListeningAddress      string   `default:"0.0.0.0" envconfig:"LISTENGING_ADDRESS"`
+	ListeningAddress      string   `default:"0.0.0.0" envconfig:"LISTENING_ADDRESS"`
 	Port                  int      `default:"7447" envconfig:"PORT"`
 	MaxEventLength        int      `default:"100000" envconfig:"MAX_EVENT_LENGTH"`
 	DeleteOldEvents       bool     `default:"false" envconfig:"DELETE_OLD_EVENTS"`
@@ -60,7 +60,8 @@ func (r *Relay) Init() error {
 			asset text NOT NULL,
 			amount text NOT NULL,
 			network text NOT NULL,
-			payer text not NULL
+			payer text NOT NULL,
+			paid_at timestamp NOT NULL DEFAULT NOW(),
 		);
 	`)
 
