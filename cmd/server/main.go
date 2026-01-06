@@ -1,0 +1,57 @@
+package main
+
+import (
+	"log"
+	"log/slog"
+	"net/http"
+
+	"git.vengeful.eu/nacorid/vengefulRelay/internal/config"
+	"git.vengeful.eu/nacorid/vengefulRelay/internal/lightning"
+	"git.vengeful.eu/nacorid/vengefulRelay/internal/payments"
+	"git.vengeful.eu/nacorid/vengefulRelay/internal/relay"
+	"git.vengeful.eu/nacorid/vengefulRelay/internal/store"
+	"git.vengeful.eu/nacorid/vengefulRelay/internal/web"
+
+	"github.com/joho/godotenv"
+)
+
+func main() {
+	godotenv.Load()
+
+	cfg := config.Load()
+
+	db, err := store.Init(cfg.PostgresDatabase)
+	if err != nil {
+		log.Fatalf("db init error: %v", err)
+	}
+
+	lnProvider := lightning.NewProvider(cfg.LNBitsURL, cfg.LNBitsKey)
+
+	khatruRelay := relay.New(cfg, db, lnProvider)
+
+	webHandler := &web.Server{
+		Config:     cfg,
+		Store:      db,
+		LNProvider: lnProvider,
+	}
+
+	mux := khatruRelay.Router()
+
+	mux.HandleFunc("/", webHandler.HandleWebpage)
+	mux.HandleFunc("/invoice", webHandler.HandleInvoice)
+	mux.HandleFunc("/check", webHandler.HandleCheck) // New endpoint for polling payment status
+
+	if cfg.CDPClientKey != "" {
+		x402Middleware := payments.SetupMiddleware(cfg, db)
+
+		finalHandler := http.HandlerFunc(webHandler.HandleAdmission)
+		mux.Handle("/admission", x402Middleware(finalHandler))
+	} else {
+		mux.HandleFunc("/admission", webHandler.HandleAdmission)
+	}
+
+	slog.Info("relay running", "port", cfg.Port)
+	if err := http.ListenAndServe(":"+cfg.Port, khatruRelay); err != nil {
+		log.Fatal(err)
+	}
+}
