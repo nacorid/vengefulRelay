@@ -11,6 +11,8 @@ type Config struct {
 	RelayName             string   `default:"Vengeful Relay" envconfig:"RELAY_NAME"`
 	RelayPubkey           string   `envconfig:"RELAY_PUBKEY"`
 	RelayDescription      string   `default:"A simple nostr relay written in go" envconfig:"RELAY_DESCRIPTION"`
+	RelayURL              string   `default:"https://relay.vengeful.eu" envconfig:"RELAY_URL"`
+	ContactEmail          string   `envconfig:"CONTACT_EMAIL"`
 	ListeningAddress      string   `default:"0.0.0.0" envconfig:"LISTENING_ADDRESS"`
 	Port                  string   `default:"7447" envconfig:"PORT"`
 	MaxEventLength        int      `default:"100000" envconfig:"MAX_EVENT_LENGTH"`

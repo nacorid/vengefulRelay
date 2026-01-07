@@ -13,7 +13,6 @@ import (
 
 	fnostr "fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/khatru"
-	"github.com/nbd-wtf/go-nostr"
 )
 
 type VengefulRelay struct {
@@ -39,8 +38,11 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider) *Vengeful
 
 	r.Info.Name = cfg.RelayName
 	r.Info.PubKey = &pkey
+	r.Info.Contact = cfg.ContactEmail
 	r.Info.Description = cfg.RelayDescription
-	r.Info.URL = "https://relay.vengeful.eu"
+	r.Info.URL = cfg.RelayURL
+
+	r.OnEvent = vr.rejectEventPolicy
 
 	r.UseEventstore(st, 1000)
 
@@ -51,18 +53,18 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider) *Vengeful
 	return vr
 }
 
-func (vr *VengefulRelay) rejectEventPolicy(ctx context.Context, evt *nostr.Event) (bool, string) {
+func (vr *VengefulRelay) rejectEventPolicy(ctx context.Context, evt fnostr.Event) (bool, string) {
 	if vr.Config.FreeRelay {
 		return false, "" // Accepted (false means do not reject)
 	}
 
 	// 1. Check Whitelist
-	if slices.Contains(vr.Config.Whitelist, evt.PubKey) {
+	if slices.Contains(vr.Config.Whitelist, evt.PubKey.String()) {
 		return false, ""
 	}
 
 	// 2. Check Database for Payment
-	if vr.Store.IsPubkeyRegistered(evt.PubKey) {
+	if vr.Store.IsPubkeyRegistered(evt.PubKey.String()) {
 		return false, ""
 	}
 
