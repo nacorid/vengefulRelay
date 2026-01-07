@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"log/slog"
 	"slices"
-	"time"
 
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/config"
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/lightning"
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/store"
 
-	fnostr "fiatjaf.com/nostr"
+	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/khatru"
+	"fiatjaf.com/nostr/khatru/policies"
+	"fiatjaf.com/nostr/nip11"
 )
 
 type VengefulRelay struct {
@@ -23,7 +24,10 @@ type VengefulRelay struct {
 	logger     *slog.Logger
 }
 
-func New(cfg config.Config, st *store.Storage, ln *lightning.Provider) *VengefulRelay {
+func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *slog.Logger) *VengefulRelay {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	r := khatru.NewRelay()
 
 	vr := &VengefulRelay{
@@ -31,29 +35,43 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider) *Vengeful
 		Config:     cfg,
 		Store:      st,
 		LNProvider: ln,
-		logger:     slog.Default(),
+		logger:     logger,
 	}
 
-	pkey := fnostr.MustPubKeyFromHex(cfg.RelayPubkey)
+	pkey := nostr.MustPubKeyFromHex(cfg.RelayPubkey)
 
 	r.Info.Name = cfg.RelayName
 	r.Info.PubKey = &pkey
 	r.Info.Contact = cfg.ContactEmail
 	r.Info.Description = cfg.RelayDescription
 	r.Info.URL = cfg.RelayURL
+	r.Info.Icon = cfg.RelayIcon
+	r.Info.Fees = &nip11.RelayFeesDocument{
+		Admission: []struct {
+			Amount int    `json:"amount"`
+			Unit   string `json:"unit"`
+		}{
+			{
+				Amount: int(cfg.AdmissionFee),
+				Unit:   "sats",
+			},
+		},
+	}
+	r.Info.PaymentsURL = cfg.RelayURL + "/invoice"
+	r.Info.Software = "github.com/nacorid/vengefulRelay"
+	r.Info.Version = "0.1.0"
 
-	r.OnEvent = vr.rejectEventPolicy
+	r.OnRequest = policies.SeqRequest(policies.AntiSyncBots, policies.NoEmptyFilters)
+	r.OnEvent = policies.SeqEvent(vr.rejectEventPolicy)
+
+	r.Log = slog.NewLogLogger(logger.Handler(), slog.LevelDebug)
 
 	r.UseEventstore(st, 1000)
-
-	if cfg.DeleteOldEvents && cfg.DeleteEventsOlderThan > 0 {
-		go vr.runJanitor()
-	}
 
 	return vr
 }
 
-func (vr *VengefulRelay) rejectEventPolicy(ctx context.Context, evt fnostr.Event) (bool, string) {
+func (vr *VengefulRelay) rejectEventPolicy(ctx context.Context, evt nostr.Event) (bool, string) {
 	if vr.Config.FreeRelay {
 		return false, "" // Accepted (false means do not reject)
 	}
@@ -75,17 +93,5 @@ func (vr *VengefulRelay) rejectEventPolicy(ctx context.Context, evt fnostr.Event
 	}
 
 	// If we are here, they haven't paid
-	return true, "payment required: visit " + vr.Info.URL
-}
-
-func (vr *VengefulRelay) runJanitor() {
-	for {
-		time.Sleep(60 * time.Minute)
-		vr.logger.Debug("Running janitor...")
-		_, err := vr.Store.DB.Exec(`DELETE FROM event WHERE created_at < $1`,
-			time.Now().AddDate(0, -vr.Config.DeleteEventsOlderThan, 0).Unix())
-		if err != nil {
-			vr.logger.Error("Janitor error", "error", err)
-		}
-	}
+	return true, "payment required: visit " + vr.Info.PaymentsURL
 }

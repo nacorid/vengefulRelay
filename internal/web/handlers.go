@@ -56,7 +56,7 @@ document.querySelector('form').addEventListener('submit', async ev => {
 })
 </script>
 <style>body { margin: 10px auto; width: 800px; max-width: 90%%; font-family: sans-serif; }</style>
-    `, s.Config.RelayName, s.Config.RelayName, s.Config.RelayDescription, s.Config.TicketPriceSats)))
+    `, s.Config.RelayName, s.Config.RelayName, s.Config.RelayDescription, s.Config.AdmissionFee)))
 }
 
 func (s *Server) HandleInvoice(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +71,7 @@ func (s *Server) HandleInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bolt11, hash, err := s.LNProvider.GenerateInvoice(s.Config.TicketPriceSats, "Admission for "+pubkey)
+	bolt11, hash, err := s.LNProvider.GenerateInvoice(s.Config.AdmissionFee, "Admission for "+pubkey)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error": "%s"}`, err.Error()), 500)
 		return

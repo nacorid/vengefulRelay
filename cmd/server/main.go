@@ -13,6 +13,7 @@ import (
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/web"
 
 	"github.com/joho/godotenv"
+	logn "github.com/nacorid/logger"
 )
 
 func main() {
@@ -25,9 +26,15 @@ func main() {
 		log.Fatalf("db init error: %v", err)
 	}
 
+	err = logn.Init(logn.Config{LogFilePath: "output.log", ConsoleLevel: logn.LevelInfo, FileLevel: logn.LevelTrace})
+	if err != nil {
+		log.Printf("logger init error: %v", err)
+	}
+	logger := slog.Default().With("component", "relay")
+
 	lnProvider := lightning.NewProvider(cfg.LNBitsURL, cfg.LNBitsKey)
 
-	khatruRelay := relay.New(cfg, db, lnProvider)
+	khatruRelay := relay.New(cfg, db, lnProvider, logger)
 
 	webHandler := &web.Server{
 		Config:     cfg,

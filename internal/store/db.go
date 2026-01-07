@@ -41,6 +41,10 @@ func Init(databaseURL string) (*Storage, error) {
 		return nil, fmt.Errorf("failed to create invoices table: %w", err)
 	}
 
+	err = db.Init()
+	if err != nil {
+		return nil, fmt.Errorf("failed to init eventstore backend: %w", err)
+	}
 	return &Storage{PostgresBackend: db}, nil
 }
 
@@ -102,12 +106,6 @@ func (s *Storage) RegisterPayment(pubkey, txId, asset, amount, network, payer st
 		pubkey, txId, asset, amount, network, payer,
 	)
 	return err
-}
-
-func (s *Storage) PruneOldEvents(months int) {
-	// postgresql backend has its own logic, but if you want raw deletion:
-	// s.DB.Exec(`DELETE FROM event WHERE created_at < ...`)
-	// For Khatru/Eventstore, usually you configure retention policies or run this separately.
 }
 
 func toNBDFilter(f nostr.Filter) nbd.Filter {
