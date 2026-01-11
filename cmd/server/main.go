@@ -20,6 +20,7 @@ func main() {
 	godotenv.Load()
 
 	cfg := config.Load()
+	cfg.Whitelist = append(cfg.Whitelist, cfg.RelayPubkey)
 
 	db, err := store.Init(cfg.PostgresDatabase)
 	if err != nil {

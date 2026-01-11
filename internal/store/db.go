@@ -8,9 +8,20 @@ import (
 	"iter"
 
 	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/eventstore"
 	"github.com/fiatjaf/eventstore/postgresql"
 	_ "github.com/lib/pq"
 	nbd "github.com/nbd-wtf/go-nostr"
+)
+
+var _ eventstore.Store = (*Storage)(nil)
+
+type PubKeyState int
+
+const (
+	PubKeyUnknown PubKeyState = iota
+	PubKeyAllowed
+	PubKeyBanned
 )
 
 type Storage struct {
@@ -34,11 +45,25 @@ func Init(databaseURL string) (*Storage, error) {
 			amount text NOT NULL,
 			network text NOT NULL,
 			payer text NOT NULL,
-			paid_at timestamp NOT NULL DEFAULT NOW()
+			paid_at timestamp NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (pubkey, transaction_id)
 		);
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create invoices table: %w", err)
+	}
+
+	_, err = rawDB.Exec(`
+		CREATE TABLE IF NOT EXISTS known_pubkeys (
+			pubkey  text PRIMARY KEY,
+			allowed boolean NOT NULL DEFAULT false,
+			banned  boolean NOT NULL DEFAULT false,
+			reason  text,
+			CHECK (NOT (allowed AND banned))
+		);
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create allowlist table: %w", err)
 	}
 
 	err = db.Init()
@@ -100,10 +125,129 @@ func (s *Storage) IsPubkeyRegistered(pubkey string) bool {
 	return exists
 }
 
+func (s *Storage) QueryPubkeyState(pubkey string) (nostr.PubKey, PubKeyState, string, error) {
+	var (
+		pubkeyHex string
+		allowed   bool
+		banned    bool
+		reason    sql.NullString
+	)
+
+	err := s.DB.QueryRow(`
+		SELECT pubkey, allowed, banned, reason
+		FROM known_pubkeys
+		WHERE pubkey = $1
+	`, pubkey).Scan(&pubkeyHex, &allowed, &banned, &reason)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nostr.PubKey{}, PubKeyUnknown, "", nil
+		}
+		return nostr.PubKey{}, PubKeyUnknown, "", err
+	}
+
+	pk := nostr.MustPubKeyFromHex(pubkeyHex)
+
+	switch {
+	case banned:
+		return pk, PubKeyBanned, reason.String, nil
+	case allowed:
+		return pk, PubKeyAllowed, "", nil
+	default:
+		return pk, PubKeyUnknown, "", nil
+	}
+}
+
+func (s *Storage) QueryAllPubkeyStates(state PubKeyState) ([]nostr.PubKey, []string, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+
+	switch state {
+	case PubKeyAllowed:
+		rows, err = s.DB.Query(`
+			SELECT pubkey, reason
+			FROM known_pubkeys
+			WHERE allowed = true
+		`)
+	case PubKeyBanned:
+		rows, err = s.DB.Query(`
+			SELECT pubkey, reason
+			FROM known_pubkeys
+			WHERE banned = true
+		`)
+	case PubKeyUnknown:
+		rows, err = s.DB.Query(`
+			SELECT pubkey, NULL
+			FROM known_pubkeys
+			WHERE allowed = false
+			  AND banned = false
+		`)
+	default:
+		return nil, nil, fmt.Errorf("invalid pubkey state: %v", state)
+	}
+
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	var (
+		pubkeys []nostr.PubKey
+		reasons []string
+	)
+
+	for rows.Next() {
+		var (
+			pubkeyHex string
+			reason    sql.NullString
+		)
+
+		if err := rows.Scan(&pubkeyHex, &reason); err != nil {
+			return nil, nil, err
+		}
+
+		pubkeys = append(pubkeys, nostr.MustPubKeyFromHex(pubkeyHex))
+		reasons = append(reasons, reason.String)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	return pubkeys, reasons, nil
+}
+
 func (s *Storage) RegisterPayment(pubkey, txId, asset, amount, network, payer string) error {
 	_, err := s.DB.Exec(
 		"INSERT INTO invoices_paid (pubkey, transaction_id, asset, amount, network, payer) VALUES ($1, $2, $3, $4, $5, $6)",
 		pubkey, txId, asset, amount, network, payer,
+	)
+	return err
+}
+
+func (s *Storage) AllowPubKey(ctx context.Context, pubkey string, pubkeyState PubKeyState, reason string) error {
+	var allowed, banned bool
+	switch pubkeyState {
+	case PubKeyAllowed:
+		allowed = true
+		banned = false
+	case PubKeyBanned:
+		allowed = false
+		banned = true
+	default:
+		allowed = false
+		banned = false
+	}
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO allowlist (pubkey, allowed, banned, reason) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (pubkey) DO UPDATE
+		SET
+			allowed  = EXCLUDED.allowed,
+			banned   = EXCLUDED.banned
+			reason   = EXCLUDED.reason`,
+		pubkey, allowed, banned, reason,
 	)
 	return err
 }

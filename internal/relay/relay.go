@@ -2,9 +2,7 @@ package relay
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
-	"slices"
 
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/config"
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/lightning"
@@ -46,6 +44,13 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *s
 	r.Info.Description = cfg.RelayDescription
 	r.Info.URL = cfg.RelayURL
 	r.Info.Icon = cfg.RelayIcon
+	r.Info.Limitation = &nip11.RelayLimitationDocument{
+		MaxMessageLength: cfg.MaxEventLength,
+		MinPowDifficulty: cfg.MinPowDifficulty,
+		AuthRequired:     true,
+		PaymentRequired:  true,
+		RestrictedWrites: true,
+	}
 	r.Info.Fees = &nip11.RelayFeesDocument{
 		Admission: []struct {
 			Amount int    `json:"amount"`
@@ -57,41 +62,33 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *s
 			},
 		},
 	}
-	r.Info.PaymentsURL = cfg.RelayURL + "/invoice"
-	r.Info.Software = "github.com/nacorid/vengefulRelay"
+	r.Info.PaymentsURL = cfg.RelayURL
+	r.Info.Software = "git.vengeful.eu/nacorid/vengefulRelay"
 	r.Info.Version = "0.1.0"
 
-	r.OnRequest = policies.SeqRequest(policies.AntiSyncBots, policies.NoEmptyFilters)
-	r.OnEvent = policies.SeqEvent(vr.rejectEventPolicy)
+	r.OnRequest = policies.SeqRequest(policies.MustAuth, policies.AntiSyncBots, policies.NoEmptyFilters)
+	r.OnEvent = policies.SeqEvent(
+		vr.authPolicy,
+		vr.signaturePolicy,
+		vr.paymentPolicy,
+		vr.eventLengthPolicy,
+		vr.proofOfWorkPolicy,
+		vr.timestampPolicy,
+	)
+	r.OnConnect = func(ctx context.Context) { khatru.RequestAuth(ctx) }
 
 	r.Log = slog.NewLogLogger(logger.Handler(), slog.LevelDebug)
 
 	r.UseEventstore(st, 1000)
 
+	r.Negentropy = true
+
+	r.ManagementAPI.AllowPubKey = vr.allowPubKey
+	r.ManagementAPI.BanPubKey = vr.banPubKey
+	r.ManagementAPI.ListAllowedPubKeys = vr.listAllowedPubKeys
+	r.ManagementAPI.ListBannedPubKeys = vr.listBannedPubKeys
+
+	r.Info.SupportedNIPs = []any{1, 9, 11, 40, 42, 45, 70, 77, 86}
+
 	return vr
-}
-
-func (vr *VengefulRelay) rejectEventPolicy(ctx context.Context, evt nostr.Event) (bool, string) {
-	if vr.Config.FreeRelay {
-		return false, "" // Accepted (false means do not reject)
-	}
-
-	// 1. Check Whitelist
-	if slices.Contains(vr.Config.Whitelist, evt.PubKey.String()) {
-		return false, ""
-	}
-
-	// 2. Check Database for Payment
-	if vr.Store.IsPubkeyRegistered(evt.PubKey.String()) {
-		return false, ""
-	}
-
-	// 3. Check Event Length
-	jsonb, _ := json.Marshal(evt)
-	if len(jsonb) > vr.Config.MaxEventLength {
-		return true, "event too large"
-	}
-
-	// If we are here, they haven't paid
-	return true, "payment required: visit " + vr.Info.PaymentsURL
 }
