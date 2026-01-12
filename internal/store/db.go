@@ -227,7 +227,7 @@ func (s *Storage) RegisterPayment(pubkey, txId, asset, amount, network, payer st
 	return err
 }
 
-func (s *Storage) AllowPubKey(ctx context.Context, pubkey string, pubkeyState PubKeyState, reason string) error {
+func (s *Storage) ChangePubKeyState(ctx context.Context, pubkey string, pubkeyState PubKeyState, reason string) error {
 	var allowed, banned bool
 	switch pubkeyState {
 	case PubKeyAllowed:

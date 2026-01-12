@@ -121,7 +121,7 @@ func TestNIP01_BasicFlow(t *testing.T) {
 	// For this test, we assume the mock Store allows writes or we are whitelisted.
 	// *Hack for testing*: Manually whitelist the key in the relay instance if you have a method
 	sk, pk := generateTestUser()
-	err := vr.InternalAllowPubKey(context.Background(), pk.Hex(), "")
+	err := vr.InternalChangePubKey(context.Background(), pk.Hex(), store.PubKeyAllowed, "")
 	if err != nil {
 		t.Fatalf("Failed to whitelist test user: %v", err)
 	}
@@ -190,8 +190,10 @@ func TestNIP09_Deletion(t *testing.T) {
 	defer teardown()
 
 	sk, pk := generateTestUser()
-	vr.InternalAllowPubKey(context.Background(), pk.Hex(), "")
-
+	err := vr.InternalChangePubKey(context.Background(), pk.Hex(), store.PubKeyAllowed, "")
+	if err != nil {
+		t.Fatalf("Failed to whitelist test user: %v", err)
+	}
 	ctx := context.Background()
 	relay, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
 	defer relay.Close()
@@ -296,8 +298,10 @@ func TestNIP40_Expiration(t *testing.T) {
 	defer teardown()
 
 	sk, pk := generateTestUser()
-	vr.InternalAllowPubKey(context.Background(), pk.Hex(), "")
-
+	err := vr.InternalChangePubKey(context.Background(), pk.Hex(), store.PubKeyAllowed, "")
+	if err != nil {
+		t.Fatalf("Failed to whitelist test user: %v", err)
+	}
 	ctx := context.Background()
 	relay, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
 	defer relay.Close()
@@ -317,7 +321,7 @@ func TestNIP40_Expiration(t *testing.T) {
 	}
 	evFuture.Sign(sk)
 
-	err := relay.Publish(ctx, evFuture)
+	err = relay.Publish(ctx, evFuture)
 	if err != nil {
 		t.Fatalf("Publish failed: %v", err)
 	}
@@ -348,7 +352,7 @@ func TestNIP42_Authentication(t *testing.T) {
 	defer teardown()
 
 	sk, pk := getOwnerKeys()
-	err := vr.InternalAllowPubKey(context.Background(), pk.Hex(), "")
+	err := vr.InternalChangePubKey(context.Background(), pk.Hex(), store.PubKeyAllowed, "")
 	if err != nil {
 		t.Fatalf("Failed to whitelist test user: %v", err)
 	}
@@ -413,7 +417,7 @@ func TestNIP45_Count(t *testing.T) {
 	_, vr, wsURL, teardown := setupTestRelay(t)
 	defer teardown()
 	sk, pk := generateTestUser()
-	err := vr.InternalAllowPubKey(context.Background(), pk.Hex(), "")
+	err := vr.InternalChangePubKey(context.Background(), pk.Hex(), store.PubKeyAllowed, "")
 	if err != nil {
 		t.Fatalf("Failed to whitelist test user: %v", err)
 	}
@@ -462,11 +466,11 @@ func TestNIP70_ProtectedEvents(t *testing.T) {
 
 	// Whitelist both to bypass payment checks
 	ctx := context.Background()
-	err := vr.InternalAllowPubKey(ctx, pkA.Hex(), "")
+	err := vr.InternalChangePubKey(context.Background(), pkA.Hex(), store.PubKeyAllowed, "")
 	if err != nil {
 		t.Fatalf("Failed to whitelist test user A: %v", err)
 	}
-	err = vr.InternalAllowPubKey(ctx, pkB.Hex(), "")
+	err = vr.InternalChangePubKey(context.Background(), pkB.Hex(), store.PubKeyAllowed, "")
 	if err != nil {
 		t.Fatalf("Failed to whitelist test user B: %v", err)
 	}
@@ -639,7 +643,7 @@ func TestNIP86_Management(t *testing.T) {
 
 	// Setup Admin User
 	sk, pk := generateTestUser()
-	err := vr.InternalAllowPubKey(ctx, pk.Hex(), "")
+	err := vr.InternalChangePubKey(context.Background(), pk.Hex(), store.PubKeyAllowed, "")
 	if err != nil {
 		t.Fatalf("Failed to whitelist test user: %v", err)
 	}

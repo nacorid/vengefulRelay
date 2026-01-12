@@ -15,11 +15,11 @@ func (vr *VengefulRelay) AllowPubKey(ctx context.Context, pubkey nostr.PubKey, r
 	if !ok || key != *vr.Info.PubKey {
 		return fmt.Errorf("Not authorized")
 	}
-	return vr.InternalAllowPubKey(ctx, pubkey.Hex(), reason)
+	return vr.InternalChangePubKey(ctx, pubkey.Hex(), store.PubKeyAllowed, reason)
 }
 
-func (vr *VengefulRelay) InternalAllowPubKey(ctx context.Context, pubkey, reason string) error {
-	return vr.Store.AllowPubKey(ctx, pubkey, store.PubKeyAllowed, reason)
+func (vr *VengefulRelay) InternalChangePubKey(ctx context.Context, pubkey string, state store.PubKeyState, reason string) error {
+	return vr.Store.ChangePubKeyState(ctx, pubkey, state, reason)
 }
 
 func (vr *VengefulRelay) BanPubKey(ctx context.Context, pubkey nostr.PubKey, reason string) error {
@@ -27,7 +27,7 @@ func (vr *VengefulRelay) BanPubKey(ctx context.Context, pubkey nostr.PubKey, rea
 	if !ok || key != *vr.Info.PubKey {
 		return fmt.Errorf("Not authorized")
 	}
-	return vr.InternalAllowPubKey(ctx, pubkey.Hex(), reason)
+	return vr.InternalChangePubKey(ctx, pubkey.Hex(), store.PubKeyBanned, reason)
 }
 
 func (vr *VengefulRelay) ListAllowedPubKeys(ctx context.Context) ([]nip86.PubKeyReason, error) {
