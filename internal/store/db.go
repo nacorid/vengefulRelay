@@ -81,7 +81,7 @@ func (s *Storage) CountEvents(f nostr.Filter) (uint32, error) {
 
 func (s *Storage) DeleteEvent(id nostr.ID) error {
 	event := &nbd.Event{
-		ID: id.String(),
+		ID: id.Hex(),
 	}
 	return s.PostgresBackend.DeleteEvent(context.Background(), event)
 }
@@ -241,11 +241,11 @@ func (s *Storage) AllowPubKey(ctx context.Context, pubkey string, pubkeyState Pu
 		banned = false
 	}
 	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO allowlist (pubkey, allowed, banned, reason) VALUES ($1, $2, $3, $4)
+		`INSERT INTO known_pubkeys (pubkey, allowed, banned, reason) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (pubkey) DO UPDATE
 		SET
 			allowed  = EXCLUDED.allowed,
-			banned   = EXCLUDED.banned
+			banned   = EXCLUDED.banned,
 			reason   = EXCLUDED.reason`,
 		pubkey, allowed, banned, reason,
 	)
@@ -255,7 +255,7 @@ func (s *Storage) AllowPubKey(ctx context.Context, pubkey string, pubkeyState Pu
 func toNBDFilter(f nostr.Filter) nbd.Filter {
 	var ids []string
 	for _, id := range f.IDs {
-		ids = append(ids, id.String())
+		ids = append(ids, id.Hex())
 	}
 	var kinds []int
 	for _, kind := range f.Kinds {
@@ -263,7 +263,7 @@ func toNBDFilter(f nostr.Filter) nbd.Filter {
 	}
 	var authors []string
 	for _, author := range f.Authors {
-		authors = append(authors, author.String())
+		authors = append(authors, author.Hex())
 	}
 	return nbd.Filter{
 		IDs:     ids,
@@ -281,7 +281,7 @@ func fromNbdEvent(e *nbd.Event) nostr.Event {
 	if e == nil {
 		return nostr.Event{}
 	}
-	var tags nostr.Tags
+	tags := make(nostr.Tags, 0)
 	for _, t := range e.Tags {
 		tags = append(tags, nostr.Tag(t))
 	}
@@ -303,7 +303,7 @@ func toNbdEvent(e *nostr.Event) *nbd.Event {
 	if e == nil {
 		return nil
 	}
-	var tags nbd.Tags
+	tags := make(nbd.Tags, 0)
 	for _, t := range e.Tags {
 		tags = append(tags, nbd.Tag(t))
 	}
@@ -312,8 +312,8 @@ func toNbdEvent(e *nostr.Event) *nbd.Event {
 	sig := hex.EncodeToString(e.Sig[:])
 
 	return &nbd.Event{
-		ID:        e.ID.String(),
-		PubKey:    e.PubKey.String(),
+		ID:        e.ID.Hex(),
+		PubKey:    e.PubKey.Hex(),
 		CreatedAt: nbd.Timestamp(e.CreatedAt),
 		Kind:      int(e.Kind.Num()),
 		Tags:      tags,

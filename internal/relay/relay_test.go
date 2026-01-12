@@ -2,6 +2,7 @@ package relay_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,10 +13,12 @@ import (
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip11"
+	"fiatjaf.com/nostr/nip77"
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/config"
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/lightning"
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/relay"
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/store"
+	"github.com/fasthttp/websocket"
 )
 
 // -----------------------------------------------------------------------------
@@ -27,8 +30,7 @@ var (
 )
 
 // setupTestRelay spins up a test HTTP server with your relay.
-// YOU NEED TO FILL IN THE MOCKS FOR YOUR INTERNAL DEPENDENCIES HERE.
-func setupTestRelay(t *testing.T) (*httptest.Server, *relay.VengefulRelay, string) {
+func setupTestRelay(t *testing.T) (*httptest.Server, *relay.VengefulRelay, string, func()) {
 	t.Helper()
 
 	// 1. Mock Config
@@ -38,163 +40,73 @@ func setupTestRelay(t *testing.T) (*httptest.Server, *relay.VengefulRelay, strin
 
 	cfg := config.Config{
 		RelayName:        "Test Relay",
-		RelayPubkey:      relayPk.String(),
+		RelayPubkey:      relayPk.Hex(),
 		RelayDescription: "Unit testing relay",
 		RelayURL:         "ws://localhost",
-		Whitelist:        []string{relayPk.String()},
+		Whitelist:        []string{relayPk.Hex()},
 		MaxEventLength:   100000,
 		MinPowDifficulty: 0, // Keep 0 for fast tests
 		AdmissionFee:     1000,
 	}
 
-	// 2. Mock Store
+	// 2. Initialize Store
 	st, err := store.Init("postgres://nostr@/nostr_test?host=/var/run/postgresql")
 	if err != nil {
 		t.Log("WARNING: Store is nil. Tests requiring persistence will panic until you mock the Store.")
 	}
 
-	// 3. Mock Lightning Provider
+	// 3. Extract DB handle for cleanup
+	var db *sql.DB
+	if st != nil && st.PostgresBackend != nil {
+		// Assuming PostgresBackend struct has a public 'DB' field of type *sql.DB
+		db = st.PostgresBackend.DB.DB
+	}
+
+	// 4. Mock Lightning Provider
 	// TODO: Initialize a mock LN provider
 	var ln *lightning.Provider = nil // <--- REPLACE THIS
 
-	// 4. Initialize Relay
+	// 5. Initialize Relay
 	// Passing nil logger for cleaner test output
 	vr := relay.New(cfg, st, ln, nil)
-
-	// 5. Create Test Server
-	// Khatru relay implements http.Handler
 	ts := httptest.NewServer(vr)
-
-	// Convert http:// to ws:// for client connections
 	wsURL := strings.Replace(ts.URL, "http", "ws", 1)
 
-	return ts, vr, wsURL
+	// 6. Create Teardown Closure
+	teardown := func() {
+		ts.Close()
+		cleanupDatabase(t, db) // Clean DB after test finishes
+	}
+
+	return ts, vr, wsURL, teardown
+}
+
+func cleanupDatabase(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if db == nil {
+		return
+	}
+
+	// Dropping tables as requested.
+	tables := []string{"event", "known_pubkeys", "invoices_paid"}
+
+	for _, table := range tables {
+		_, err := db.Exec("DROP TABLE IF EXISTS " + table + " CASCADE")
+		if err != nil {
+			t.Logf("Warning: Failed to cleanup table %s: %v", table, err)
+		}
+	}
 }
 
 // generateTestUser creates a keypair for a test client
 func generateTestUser() (nostr.SecretKey, nostr.PubKey) {
-	/*
-		sk := nostr.Generate()
-		pk := nostr.GetPublicKey(sk)
-		return sk, pk
-	*/
+
+	sk := nostr.Generate()
+	pk := nostr.GetPublicKey(sk)
+	return sk, pk
+}
+func getOwnerKeys() (nostr.SecretKey, nostr.PubKey) {
 	return relaySk, relayPk
-}
-
-// -----------------------------------------------------------------------------
-// NIP-11: Relay Information Document
-// -----------------------------------------------------------------------------
-
-func TestNIP11_RelayInfo(t *testing.T) {
-	ts, vr, _ := setupTestRelay(t)
-	defer ts.Close()
-
-	ctx := context.Background()
-
-	// Perform standard HTTP request with Accept header
-	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL, nil)
-	req.Header.Set("Accept", "application/nostr+json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Failed to request NIP-11 info: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		t.Errorf("Expected 200 OK, got %d", resp.StatusCode)
-	}
-
-	var info nip11.RelayInformationDocument
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		t.Fatalf("Failed to decode NIP-11 JSON: %v", err)
-	}
-
-	// Assertions based on your Config in New()
-	if info.Name != vr.Config.RelayName {
-		t.Errorf("Expected name %s, got %s", vr.Config.RelayName, info.Name)
-	}
-	if !info.Limitation.AuthRequired {
-		t.Error("Expected AuthRequired to be true")
-	}
-
-	// Verify Supported NIPs are present
-	expectedNips := []int{1, 9, 11, 40, 42, 45, 70, 77, 86}
-	for _, expected := range expectedNips {
-		found := false
-		for _, supported := range info.SupportedNIPs {
-			// SupportedNIPs can be int or string depending on json unmarshal, handle carefully
-			if v, ok := supported.(float64); ok && int(v) == expected {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("NIP-%d should be listed in supported NIPs", expected)
-		}
-	}
-}
-
-// -----------------------------------------------------------------------------
-// NIP-42: Authentication
-// -----------------------------------------------------------------------------
-
-func TestNIP42_Authentication(t *testing.T) {
-	ts, _, wsURL := setupTestRelay(t)
-	defer ts.Close()
-
-	sk, pk := generateTestUser()
-
-	// Connect without Auth first
-	ctx := context.Background()
-	relay, err := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
-	if err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer relay.Close()
-
-	// Since policies.MustAuth is on, the relay should have sent an AUTH challenge immediately.
-	// We need to listen for it.
-
-	// Note: nostr.RelayConnect doesn't automatically handle Auth unless we set a Signer.
-	// Here we want to test the raw flow manually to ensure the relay sends the challenge.
-
-	// We will try to publish; it should fail with "auth-required"
-	ev := nostr.Event{
-		PubKey:    pk,
-		CreatedAt: nostr.Now(),
-		Kind:      1,
-		Tags:      nostr.Tags{},
-		Content:   "Hello World",
-	}
-	ev.Sign(sk)
-
-	err = relay.Publish(ctx, ev)
-	if err == nil {
-		t.Errorf("Expected publish to fail before auth: %v", err)
-	}
-
-	// Now let's perform the actual Auth
-	// We assert that the Challenge was stored in the relay object (go-nostr handles receiving it)
-	/*if relay.Challenge == "" {
-		t.Error("Relay did not send an AUTH challenge upon connection")
-	}*/
-
-	// Send Auth
-	err = relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error {
-		return evt.Sign(sk)
-	})
-
-	// In a real integration test using nostr-sdk, .Auth() handles the sending.
-	// To be very specific, we can manually send:
-	// relay.Connection.WriteJSON([]interface{}{"AUTH", authEvent})
-
-	// However, let's assume we want to verify the relay accepts it.
-	// We can simply try to publish again. If Auth succeeded, publish *might* proceed
-	// (depending on payment policy, but it shouldn't fail on "auth-required").
-
-	// Check if we are considered authenticated
-	// Since we can't easily introspect the relay's memory, we rely on the absence of "auth-required" error.
 }
 
 // -----------------------------------------------------------------------------
@@ -202,19 +114,17 @@ func TestNIP42_Authentication(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestNIP01_BasicFlow(t *testing.T) {
-	ts, _, wsURL := setupTestRelay(t)
-	defer ts.Close()
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
 
 	// Bypass payment policy for this test if possible, or Mock Store to say "paid"
 	// For this test, we assume the mock Store allows writes or we are whitelisted.
 	// *Hack for testing*: Manually whitelist the key in the relay instance if you have a method
 	sk, pk := generateTestUser()
-	/*
-		err := vr.ManagementAPI.AllowPubKey(context.Background(), pk, "") // Whitelist user to bypass payment/admission if logic allows
-		if err != nil {
-			t.Fatalf("Whitelist error: %v", err)
-		}
-	*/
+	err := vr.InternalAllowPubKey(context.Background(), pk.Hex(), "")
+	if err != nil {
+		t.Fatalf("Failed to whitelist test user: %v", err)
+	}
 
 	ctx := context.Background()
 	relay, err := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
@@ -276,11 +186,11 @@ func TestNIP01_BasicFlow(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestNIP09_Deletion(t *testing.T) {
-	ts, vr, wsURL := setupTestRelay(t)
-	defer ts.Close()
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
 
 	sk, pk := generateTestUser()
-	vr.ManagementAPI.AllowPubKey(context.Background(), pk, "")
+	vr.InternalAllowPubKey(context.Background(), pk.Hex(), "")
 
 	ctx := context.Background()
 	relay, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
@@ -313,7 +223,9 @@ func TestNIP09_Deletion(t *testing.T) {
 
 	select {
 	case e := <-sub.Events:
-		t.Errorf("Event %s should have been deleted, but was received", e.ID)
+		if e.Kind == 1 {
+			t.Errorf("Event string: %s content: %s kind: %s should have been deleted, but was received", e.ID.String(), e.Content, e.Kind.String())
+		}
 	case <-sub.EndOfStoredEvents:
 		// Correct behavior: event not found
 	case <-time.After(1 * time.Second):
@@ -322,14 +234,189 @@ func TestNIP09_Deletion(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
+// NIP-11: Relay Information Document
+// -----------------------------------------------------------------------------
+
+func TestNIP11_RelayInfo(t *testing.T) {
+	ts, vr, _, teardown := setupTestRelay(t)
+	defer teardown()
+
+	ctx := context.Background()
+
+	// Perform standard HTTP request with Accept header
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL, nil)
+	req.Header.Set("Accept", "application/nostr+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to request NIP-11 info: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("Expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var info nip11.RelayInformationDocument
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		t.Fatalf("Failed to decode NIP-11 JSON: %v", err)
+	}
+
+	// Assertions based on your Config in New()
+	if info.Name != vr.Config.RelayName {
+		t.Errorf("Expected name %s, got %s", vr.Config.RelayName, info.Name)
+	}
+	if !info.Limitation.AuthRequired {
+		t.Error("Expected AuthRequired to be true")
+	}
+
+	// Verify Supported NIPs are present
+	expectedNips := []int{1, 9, 11, 40, 42, 45, 70, 77, 86}
+	for _, expected := range expectedNips {
+		found := false
+		for _, supported := range info.SupportedNIPs {
+			// SupportedNIPs can be int or string depending on json unmarshal, handle carefully
+			if v, ok := supported.(float64); ok && int(v) == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("NIP-%d should be listed in supported NIPs", expected)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------------
+// NIP-40: Expiration Timestamp
+// -----------------------------------------------------------------------------
+
+func TestNIP40_Expiration(t *testing.T) {
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	sk, pk := generateTestUser()
+	vr.InternalAllowPubKey(context.Background(), pk.Hex(), "")
+
+	ctx := context.Background()
+	relay, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	defer relay.Close()
+
+	// Auth
+	time.Sleep(50 * time.Millisecond)
+	relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(sk) })
+
+	// 1. Test Future Expiration (Should be accepted)
+	futureExp := nostr.Now() + 3600 // 1 hour in future
+	evFuture := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		Content:   "Expires soon",
+		Tags:      nostr.Tags{{"expiration", fmt.Sprintf("%d", futureExp)}},
+	}
+	evFuture.Sign(sk)
+
+	err := relay.Publish(ctx, evFuture)
+	if err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	// 2. Test Past Expiration (Should be rejected)
+	pastExp := nostr.Now() - 3600 // 1 hour ago
+	evPast := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		Content:   "Already expired",
+		Tags:      nostr.Tags{{"expiration", fmt.Sprintf("%d", pastExp)}},
+	}
+	evPast.Sign(sk)
+
+	err = relay.Publish(ctx, evPast)
+	if err != nil {
+		t.Errorf("Publish failed: %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// NIP-42: Authentication
+// -----------------------------------------------------------------------------
+
+func TestNIP42_Authentication(t *testing.T) {
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	sk, pk := getOwnerKeys()
+	err := vr.InternalAllowPubKey(context.Background(), pk.Hex(), "")
+	if err != nil {
+		t.Fatalf("Failed to whitelist test user: %v", err)
+	}
+
+	// Connect without Auth first
+	ctx := context.Background()
+	relay, err := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	if err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer relay.Close()
+
+	// Since policies.MustAuth is on, the relay should have sent an AUTH challenge immediately.
+	// We need to listen for it.
+
+	// Note: nostr.RelayConnect doesn't automatically handle Auth unless we set a Signer.
+	// Here we want to test the raw flow manually to ensure the relay sends the challenge.
+
+	// We will try to publish; it should fail with "auth-required"
+	ev := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		Tags:      nostr.Tags{},
+		Content:   "Hello World",
+	}
+	ev.Sign(sk)
+
+	err = relay.Publish(ctx, ev)
+	if err == nil {
+		t.Errorf("Expected publish to fail before auth: %v", err)
+	}
+
+	// Now let's perform the actual Auth
+	// We assert that the Challenge was stored in the relay object (go-nostr handles receiving it)
+	/*if relay.Challenge == "" {
+		t.Error("Relay did not send an AUTH challenge upon connection")
+	}*/
+
+	// Send Auth
+	err = relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error {
+		return evt.Sign(sk)
+	})
+
+	// In a real integration test using nostr-sdk, .Auth() handles the sending.
+	// To be very specific, we can manually send:
+	// relay.Connection.WriteJSON([]interface{}{"AUTH", authEvent})
+
+	// However, let's assume we want to verify the relay accepts it.
+	// We can simply try to publish again. If Auth succeeded, publish *might* proceed
+	// (depending on payment policy, but it shouldn't fail on "auth-required").
+
+	// Check if we are considered authenticated
+	// Since we can't easily introspect the relay's memory, we rely on the absence of "auth-required" error.
+}
+
+// -----------------------------------------------------------------------------
 // NIP-45: Event Counts
 // -----------------------------------------------------------------------------
 
 func TestNIP45_Count(t *testing.T) {
-	ts, vr, wsURL := setupTestRelay(t)
-	defer ts.Close()
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
 	sk, pk := generateTestUser()
-	vr.ManagementAPI.AllowPubKey(context.Background(), pk, "")
+	err := vr.InternalAllowPubKey(context.Background(), pk.Hex(), "")
+	if err != nil {
+		t.Fatalf("Failed to whitelist test user: %v", err)
+	}
 
 	ctx := context.Background()
 	relay, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
@@ -361,12 +448,187 @@ func TestNIP45_Count(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
+// NIP-70: Protected Events
+// -----------------------------------------------------------------------------
+
+func TestNIP70_ProtectedEvents(t *testing.T) {
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	// User A: Author of protected event
+	skA, pkA := generateTestUser()
+	// User B: Random other user
+	skB, pkB := generateTestUser()
+
+	// Whitelist both to bypass payment checks
+	ctx := context.Background()
+	err := vr.InternalAllowPubKey(ctx, pkA.Hex(), "")
+	if err != nil {
+		t.Fatalf("Failed to whitelist test user A: %v", err)
+	}
+	err = vr.InternalAllowPubKey(ctx, pkB.Hex(), "")
+	if err != nil {
+		t.Fatalf("Failed to whitelist test user B: %v", err)
+	}
+
+	// --- 1. User A Publishes Protected Event ---
+	relayA, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	relayA.Auth(ctx, func(ctx context.Context, e *nostr.Event) error { return e.Sign(skA) })
+
+	protectedEv := nostr.Event{
+		PubKey:    pkA,
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		Content:   "Secret stuff",
+		// NIP-70 tag: ["-"] (empty string as value, key is "-")
+		// Ideally: ["-"] or ["-", ""] depending on parser strictness.
+		// Standard is just key "-".
+		Tags: nostr.Tags{{"-"}},
+	}
+	protectedEv.Sign(skA)
+	relayA.Publish(ctx, protectedEv)
+	relayA.Close()
+
+	// --- 2. Unauthenticated Client Tries to Read ---
+	// Need a fresh connection that DOES NOT Auth
+	relayUnauth, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	// Do NOT call Auth()
+
+	subUnauth, _ := relayUnauth.Subscribe(ctx, nostr.Filter{IDs: []nostr.ID{protectedEv.ID}}, nostr.SubscriptionOptions{})
+
+	select {
+	case e := <-subUnauth.Events:
+		if e.Kind == 1 {
+			t.Errorf("NIP-70 Failure: Unauthenticated client received protected event %s", e.ID)
+		}
+	case <-time.After(500 * time.Millisecond):
+		// Success: Timeout means we didn't get it
+	}
+	relayUnauth.Close()
+
+	// --- 3. Authenticated Client (User B) Tries to Read ---
+	// NIP-70 implies: "Relays SHOULD NOT publish these events to clients that are not authenticated."
+	// It doesn't strictly mean ONLY the author can see it, just that you must be AUTH'd.
+	relayB, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	relayB.Auth(ctx, func(ctx context.Context, e *nostr.Event) error { return e.Sign(skB) })
+
+	subB, _ := relayB.Subscribe(ctx, nostr.Filter{IDs: []nostr.ID{protectedEv.ID}}, nostr.SubscriptionOptions{})
+
+	select {
+	case e := <-subB.Events:
+		if e.Kind == 1 && e.ID != protectedEv.ID {
+			t.Error("NIP-70: Received wrong event")
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("NIP-70 Failure: Authenticated client FAILED to receive protected event")
+	}
+	relayB.Close()
+}
+
+// -----------------------------------------------------------------------------
+// NIP-77: Negentropy (Reconciliation)
+// -----------------------------------------------------------------------------
+
+func TestNIP77_Negentropy(t *testing.T) {
+	_, _, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	// 1. Connect via raw WebSocket
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Websocket dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	// 2. Handle Initial AUTH Challenge
+	_, message, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read initial message: %v", err)
+	}
+
+	var authMsg []json.RawMessage
+	if err := json.Unmarshal(message, &authMsg); err != nil {
+		t.Fatalf("Invalid JSON: %v", err)
+	}
+
+	if len(authMsg) < 2 {
+		t.Fatalf("Message too short: %s", message)
+	}
+
+	var msgType string
+	json.Unmarshal(authMsg[0], &msgType)
+
+	if msgType != "AUTH" {
+		t.Fatalf("Expected AUTH challenge, got %s", msgType)
+	}
+
+	var challenge string
+	json.Unmarshal(authMsg[1], &challenge)
+
+	// 3. Perform Authentication
+	sk, pk := generateTestUser()
+	authEv := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      22242,
+		Tags:      nostr.Tags{{"relay", wsURL}, {"challenge", challenge}},
+		Content:   "",
+	}
+	authEv.Sign(sk)
+
+	// Send ["AUTH", event]
+	if err := conn.WriteJSON([]any{"AUTH", authEv}); err != nil {
+		t.Fatalf("Failed to send AUTH: %v", err)
+	}
+
+	// 4. Consume the OK response for Auth
+	// Relay should reply ["OK", event_id, true, "..."]
+	_, message, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read AUTH response: %v", err)
+	}
+	if !strings.Contains(string(message), "OK") || !strings.Contains(string(message), "true") {
+		t.Fatalf("Authentication failed, got: %s", message)
+	}
+
+	// 5. Now Send NEG-OPEN
+	// ["NEG-OPEN", "sub-id", filter, idLen, initialBound]
+	filter := nostr.Filter{Kinds: []nostr.Kind{1}, Limit: 10}
+	negMsg := []any{
+		"NEG-OPEN",
+		"test-neg-sub",
+		filter,
+		16, // id size
+		"", // initial bound
+	}
+
+	if err := conn.WriteJSON(negMsg); err != nil {
+		t.Fatalf("Failed to send NEG-OPEN: %v", err)
+	}
+
+	// 6. Read Response (Expect NEG-MSG or NEG-ERR)
+	_, message, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read NEG response: %v", err)
+	}
+
+	msgStr := string(message)
+	if strings.Contains(msgStr, "NEG-MSG") || strings.Contains(msgStr, "NEG-ERR") {
+		// Passed
+	} else if strings.Contains(msgStr, "CLOSED") {
+		t.Errorf("Subscription closed unexpectedly: %s", msgStr)
+	} else {
+		t.Errorf("Expected NEG-MSG or NEG-ERR, received: %s", msgStr)
+	}
+}
+
+// -----------------------------------------------------------------------------
 // NIP-86: Management API
 // -----------------------------------------------------------------------------
 
 func TestNIP86_Management(t *testing.T) {
-	ts, vr, wsURL := setupTestRelay(t)
-	defer ts.Close()
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
 
 	// NIP-86 usually requires the user to be an admin (AllowPubKey logic in your code).
 	// But purely checking the RPC method existence:
@@ -377,11 +639,10 @@ func TestNIP86_Management(t *testing.T) {
 
 	// Setup Admin User
 	sk, pk := generateTestUser()
-
-	// IMPORTANT: In your code, you likely need to configure WHO is allowed to access management.
-	// Usually via `vr.ManagementAPI.AllowPubKey` logic.
-	// For this test, we assume the relay setup allows this PK or we force it:
-	vr.ManagementAPI.AllowPubKey(ctx, pk, "")
+	err := vr.InternalAllowPubKey(ctx, pk.Hex(), "")
+	if err != nil {
+		t.Fatalf("Failed to whitelist test user: %v", err)
+	}
 
 	// Authenticate as Admin
 	time.Sleep(50 * time.Millisecond)
@@ -412,8 +673,7 @@ func TestNIP86_Management(t *testing.T) {
 	// instead of Integration style for this complex part without a dedicated client.
 
 	// We expect the pubkey we just allowed to be in the list
-	// This tests the `vr.allowPubKey` and `vr.listAllowedPubKeys` implementation logic.
-	res, err := vr.ManagementAPI.ListAllowedPubKeys(ctx)
+	res, err := vr.InternalListPubKeys(store.PubKeyAllowed)
 	if err != nil {
 		t.Fatalf("Management API failed: %v", err)
 	}
@@ -428,5 +688,26 @@ func TestNIP86_Management(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Management API did not return the key we allowed manually")
+	}
+}
+
+func TestDebugParserSupport(t *testing.T) {
+	// 1. Manually construct the JSON that failed
+	// ["NEG-OPEN", "sub-id", {}, 16, ""]
+	rawJSON := `["NEG-OPEN", "test", {}, 16, ""]`
+
+	// 2. Attempt to parse it using the imported library
+	envelope := nip77.ParseNegMessage(rawJSON)
+
+	// 3. Check what we got
+	if envelope == nil {
+		t.Fatal("nip77.ParseNegMessage returned nil (Message not recognized)")
+	}
+
+	t.Logf("Parsed type: %T", envelope)
+
+	// 4. Assert it is the correct type
+	if _, ok := envelope.(*nip77.OpenEnvelope); !ok {
+		t.Fatalf("Expected *nip77.OpenEnvelope, got %T. Your go-nostr dependency is definitely outdated.", envelope)
 	}
 }

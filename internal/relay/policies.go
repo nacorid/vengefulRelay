@@ -35,7 +35,7 @@ func (vr *VengefulRelay) signaturePolicy(ctx context.Context, evt nostr.Event) (
 
 func (vr *VengefulRelay) paymentPolicy(ctx context.Context, evt nostr.Event) (bool, string) {
 	// 1. Check Whitelist
-	if slices.Contains(vr.Config.Whitelist, evt.PubKey.String()) {
+	if slices.Contains(vr.Config.Whitelist, evt.PubKey.Hex()) {
 		return false, ""
 	}
 
