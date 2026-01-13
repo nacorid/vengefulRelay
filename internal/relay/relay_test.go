@@ -117,9 +117,6 @@ func TestNIP01_BasicFlow(t *testing.T) {
 	_, vr, wsURL, teardown := setupTestRelay(t)
 	defer teardown()
 
-	// Bypass payment policy for this test if possible, or Mock Store to say "paid"
-	// For this test, we assume the mock Store allows writes or we are whitelisted.
-	// *Hack for testing*: Manually whitelist the key in the relay instance if you have a method
 	sk, pk := generateTestUser()
 	err := vr.InternalChangePubKey(context.Background(), pk.Hex(), store.PubKeyAllowed, "")
 	if err != nil {
@@ -132,17 +129,6 @@ func TestNIP01_BasicFlow(t *testing.T) {
 		t.Fatalf("Connect error: %v", err)
 	}
 
-	// 1. Authenticate
-	authEv := func(ctx context.Context, evt *nostr.Event) error {
-		return evt.Sign(sk)
-	}
-	// Wait for challenge
-	time.Sleep(50 * time.Millisecond)
-	if err := relay.Auth(ctx, authEv); err != nil {
-		t.Fatalf("Auth failed: %v", err)
-	}
-
-	// 2. Publish Event
 	ev := nostr.Event{
 		PubKey:    pk,
 		CreatedAt: nostr.Now(),
@@ -156,10 +142,17 @@ func TestNIP01_BasicFlow(t *testing.T) {
 
 	err = relay.Publish(ctx, ev)
 	if err != nil {
-		t.Fatalf("Publish failed: %v", err)
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(sk) }); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relay.Publish(ctx, ev)
+		if err != nil {
+			t.Fatalf("Publish failed: %v", err)
+		}
 	}
 
-	// 3. Subscribe
 	sub, err := relay.Subscribe(ctx, nostr.Filter{
 		Kinds:   []nostr.Kind{1},
 		Authors: []nostr.PubKey{pk},
@@ -168,7 +161,6 @@ func TestNIP01_BasicFlow(t *testing.T) {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
 
-	// 4. Read Event (if publish worked) or EOSE
 	select {
 	case received := <-sub.Events:
 		if received.Content != "NIP-01 Test" {
@@ -198,14 +190,21 @@ func TestNIP09_Deletion(t *testing.T) {
 	relay, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
 	defer relay.Close()
 
-	// Auth
-	time.Sleep(50 * time.Millisecond)
-	relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(sk) })
-
 	// 1. Publish regular event
 	ev1 := nostr.Event{PubKey: pk, CreatedAt: nostr.Now(), Kind: 1, Content: "To be deleted"}
 	ev1.Sign(sk)
-	relay.Publish(ctx, ev1)
+	err = relay.Publish(ctx, ev1)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(sk) }); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relay.Publish(ctx, ev1)
+		if err != nil {
+			t.Fatalf("Publish failed: %v", err)
+		}
+	}
 
 	// 2. Publish Deletion (Kind 5)
 	evDel := nostr.Event{
@@ -216,16 +215,17 @@ func TestNIP09_Deletion(t *testing.T) {
 		Content:   "Oops",
 	}
 	evDel.Sign(sk)
-	relay.Publish(ctx, evDel)
+	err = relay.Publish(ctx, evDel)
+	if err != nil {
+		t.Fatalf("Publish deletion failed: %v", err)
+	}
 
 	// 3. Query for ev1
-	// Depending on Relay implementation, it might not return it,
-	// or return it but the client filters it (khatru typically deletes from store or marks deleted)
 	sub, _ := relay.Subscribe(ctx, nostr.Filter{IDs: []nostr.ID{ev1.ID}}, nostr.SubscriptionOptions{})
 
 	select {
 	case e := <-sub.Events:
-		if e.Kind == 1 {
+		if e.ID.Hex() == ev1.ID.Hex() {
 			t.Errorf("Event string: %s content: %s kind: %s should have been deleted, but was received", e.ID.String(), e.Content, e.Kind.String())
 		}
 	case <-sub.EndOfStoredEvents:
@@ -306,10 +306,6 @@ func TestNIP40_Expiration(t *testing.T) {
 	relay, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
 	defer relay.Close()
 
-	// Auth
-	time.Sleep(50 * time.Millisecond)
-	relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(sk) })
-
 	// 1. Test Future Expiration (Should be accepted)
 	futureExp := nostr.Now() + 3600 // 1 hour in future
 	evFuture := nostr.Event{
@@ -323,7 +319,15 @@ func TestNIP40_Expiration(t *testing.T) {
 
 	err = relay.Publish(ctx, evFuture)
 	if err != nil {
-		t.Fatalf("Publish failed: %v", err)
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(sk) }); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relay.Publish(ctx, evFuture)
+		if err != nil {
+			t.Fatalf("Publish failed: %v", err)
+		}
 	}
 
 	// 2. Test Past Expiration (Should be rejected)
@@ -426,14 +430,22 @@ func TestNIP45_Count(t *testing.T) {
 	relay, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
 	defer relay.Close()
 
-	time.Sleep(50 * time.Millisecond)
-	relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(sk) })
-
 	// Publish 2 events
 	for i := 0; i < 2; i++ {
 		ev := nostr.Event{PubKey: pk, CreatedAt: nostr.Now(), Kind: 1, Content: fmt.Sprintf("msg %d", i)}
 		ev.Sign(sk)
-		relay.Publish(ctx, ev)
+		err := relay.Publish(ctx, ev)
+		if err != nil {
+			if strings.Contains(err.Error(), "auth-required") {
+				if authErr := relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(sk) }); authErr != nil {
+					t.Fatalf("Auth failed: %v", authErr)
+				}
+			}
+			err = relay.Publish(ctx, ev)
+			if err != nil {
+				t.Fatalf("Publish failed: %v", err)
+			}
+		}
 	}
 
 	// Use Count method
@@ -477,7 +489,6 @@ func TestNIP70_ProtectedEvents(t *testing.T) {
 
 	// --- 1. User A Publishes Protected Event ---
 	relayA, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
-	relayA.Auth(ctx, func(ctx context.Context, e *nostr.Event) error { return e.Sign(skA) })
 
 	protectedEv := nostr.Event{
 		PubKey:    pkA,
@@ -490,7 +501,18 @@ func TestNIP70_ProtectedEvents(t *testing.T) {
 		Tags: nostr.Tags{{"-"}},
 	}
 	protectedEv.Sign(skA)
-	relayA.Publish(ctx, protectedEv)
+	err = relayA.Publish(ctx, protectedEv)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relayA.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(skA) }); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relayA.Publish(ctx, protectedEv)
+		if err != nil {
+			t.Fatalf("Publish failed: %v", err)
+		}
+	}
 	relayA.Close()
 
 	// --- 2. Unauthenticated Client Tries to Read ---

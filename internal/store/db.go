@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"iter"
+	"strings"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore"
@@ -87,20 +89,63 @@ func (s *Storage) DeleteEvent(id nostr.ID) error {
 }
 
 func (s *Storage) QueryEvents(f nostr.Filter, i int) iter.Seq[nostr.Event] {
-	filter := toNBDFilter(f)
-
-	ch, err := s.PostgresBackend.QueryEvents(context.Background(), filter)
-	if err != nil {
-		return nil
-	}
-
-	// 3. Convert Channel to Iterator
 	return func(yield func(nostr.Event) bool) {
-		for oldEvt := range ch {
-			// Convert back to new Event
-			newEvt := fromNbdEvent(oldEvt)
-			if !yield(newEvt) {
-				return // Stop iteration if caller says so
+		// 1. Build the SQL query
+		query, params, err := buildEventQuery(f)
+		if err != nil {
+			return
+		}
+
+		rows, err := s.PostgresBackend.DB.QueryContext(context.Background(), query, params...)
+		if err != nil {
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var evt nostr.Event
+			var timestamp int64
+
+			var idStr, pubkeyStr, sigStr string
+			var tagsBytes []byte
+
+			err := rows.Scan(
+				&idStr,
+				&pubkeyStr,
+				&timestamp,
+				&evt.Kind,
+				&tagsBytes,
+				&evt.Content,
+				&sigStr,
+			)
+			if err != nil {
+				continue
+			}
+
+			// --- Type Conversion ---
+			if idVal, err := nostr.IDFromHex(idStr); err == nil {
+				evt.ID = idVal
+			} else {
+				continue
+			}
+			if pkVal, err := nostr.PubKeyFromHex(pubkeyStr); err == nil {
+				evt.PubKey = pkVal
+			} else {
+				continue
+			}
+			sigBytes, err := hex.DecodeString(sigStr)
+			if err == nil && len(sigBytes) == 64 {
+				copy(evt.Sig[:], sigBytes)
+			}
+
+			evt.CreatedAt = nostr.Timestamp(timestamp)
+
+			if err := json.Unmarshal(tagsBytes, &evt.Tags); err != nil {
+				continue
+			}
+
+			if !yield(evt) {
+				return
 			}
 		}
 	}
@@ -320,4 +365,77 @@ func toNbdEvent(e *nostr.Event) *nbd.Event {
 		Content:   e.Content,
 		Sig:       sig,
 	}
+}
+
+func buildEventQuery(filter nostr.Filter) (string, []any, error) {
+	var conditions []string
+	var params []any
+
+	addParam := func(val any) string {
+		params = append(params, val)
+		return fmt.Sprintf("$%d", len(params))
+	}
+
+	if len(filter.IDs) > 0 {
+		var ph []string
+		for _, id := range filter.IDs {
+			ph = append(ph, addParam(id.Hex()))
+		}
+		conditions = append(conditions, fmt.Sprintf("id IN (%s)", strings.Join(ph, ",")))
+	}
+
+	if len(filter.Authors) > 0 {
+		var ph []string
+		for _, pk := range filter.Authors {
+			ph = append(ph, addParam(pk.Hex()))
+		}
+		conditions = append(conditions, fmt.Sprintf("pubkey IN (%s)", strings.Join(ph, ",")))
+	}
+
+	if len(filter.Kinds) > 0 {
+		var ph []string
+		for _, k := range filter.Kinds {
+			ph = append(ph, addParam(k))
+		}
+		conditions = append(conditions, fmt.Sprintf("kind IN (%s)", strings.Join(ph, ",")))
+	}
+
+	for _, values := range filter.Tags {
+		if len(values) == 0 {
+			continue
+		}
+		var ph []string
+		for _, val := range values {
+			ph = append(ph, addParam(val))
+		}
+		conditions = append(conditions, fmt.Sprintf("tagvalues && ARRAY[%s]", strings.Join(ph, ",")))
+	}
+
+	if filter.Since != 0 {
+		conditions = append(conditions, fmt.Sprintf("created_at >= %s", addParam(filter.Since)))
+	}
+	if filter.Until != 0 {
+		conditions = append(conditions, fmt.Sprintf("created_at <= %s", addParam(filter.Until)))
+	}
+
+	if len(conditions) == 0 {
+		conditions = append(conditions, "true")
+	}
+
+	limit := 100
+	if filter.Limit > 0 && filter.Limit < 1000 {
+		limit = filter.Limit
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id, pubkey, created_at, kind, tags, content, sig
+		FROM event 
+		WHERE %s 
+		ORDER BY created_at DESC, id ASC 
+		LIMIT %d`,
+		strings.Join(conditions, " AND "),
+		limit,
+	)
+
+	return query, params, nil
 }
