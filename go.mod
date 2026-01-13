@@ -3,7 +3,7 @@ module git.vengeful.eu/nacorid/vengefulRelay
 go 1.25.4
 
 require (
-	fiatjaf.com/nostr v0.0.0-20260110125515-a5e52684e880
+	fiatjaf.com/nostr v0.0.0-20260113104945-455d7fcefee4
 	github.com/fiatjaf/eventstore v0.17.5
 	github.com/joho/godotenv v1.5.1
 	github.com/kelseyhightower/envconfig v1.4.0

@@ -1,7 +1,7 @@
 fiatjaf.com/lib v0.3.2 h1:RBS41z70d8Rp8e2nemQsbPY1NLLnEGShiY2c+Bom3+Q=
 fiatjaf.com/lib v0.3.2/go.mod h1:UlHaZvPHj25PtKLh9GjZkUHRmQ2xZ8Jkoa4VRaLeeQ8=
-fiatjaf.com/nostr v0.0.0-20260110125515-a5e52684e880 h1:WJpPdI0/5lKmtWN7EQE+C36wieDrjYSwvtSXYmKPMs8=
-fiatjaf.com/nostr v0.0.0-20260110125515-a5e52684e880/go.mod h1:ue7yw0zHfZj23Ml2kVSdBx0ENEaZiuvGxs/8VEN93FU=
+fiatjaf.com/nostr v0.0.0-20260113104945-455d7fcefee4 h1:jZwgLZrvs6JWORtzn3dmCu5ZsAIRqdFIPghu18JborM=
+fiatjaf.com/nostr v0.0.0-20260113104945-455d7fcefee4/go.mod h1:ue7yw0zHfZj23Ml2kVSdBx0ENEaZiuvGxs/8VEN93FU=
 filippo.io/edwards25519 v1.1.0 h1:FNf4tywRC1HmFuKW5xopWpigGjJKiJSV0Cqo0cJWDaA=
 filippo.io/edwards25519 v1.1.0/go.mod h1:BxyFTGdWcka3PhytdK4V28tE5sGfRvvvRV7EaN4VDT4=
 github.com/AlekSi/pointer v1.1.0 h1:SSDMPcXD9jSl8FPy9cRzoRaMJtm9g9ggGTxecRUbQoI=

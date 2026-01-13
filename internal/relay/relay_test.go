@@ -13,7 +13,6 @@ import (
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip11"
-	"fiatjaf.com/nostr/nip77"
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/config"
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/lightning"
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/relay"
@@ -624,7 +623,6 @@ func TestNIP77_Negentropy(t *testing.T) {
 		"NEG-OPEN",
 		"test-neg-sub",
 		filter,
-		16, // id size
 		"", // initial bound
 	}
 
@@ -714,26 +712,5 @@ func TestNIP86_Management(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Management API did not return the key we allowed manually")
-	}
-}
-
-func TestDebugParserSupport(t *testing.T) {
-	// 1. Manually construct the JSON that failed
-	// ["NEG-OPEN", "sub-id", {}, 16, ""]
-	rawJSON := `["NEG-OPEN", "test", {}, 16, ""]`
-
-	// 2. Attempt to parse it using the imported library
-	envelope := nip77.ParseNegMessage(rawJSON)
-
-	// 3. Check what we got
-	if envelope == nil {
-		t.Fatal("nip77.ParseNegMessage returned nil (Message not recognized)")
-	}
-
-	t.Logf("Parsed type: %T", envelope)
-
-	// 4. Assert it is the correct type
-	if _, ok := envelope.(*nip77.OpenEnvelope); !ok {
-		t.Fatalf("Expected *nip77.OpenEnvelope, got %T. Your go-nostr dependency is definitely outdated.", envelope)
 	}
 }

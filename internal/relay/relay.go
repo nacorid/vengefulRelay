@@ -88,7 +88,7 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *s
 	r.ManagementAPI.ListAllowedPubKeys = vr.ListAllowedPubKeys
 	r.ManagementAPI.ListBannedPubKeys = vr.ListBannedPubKeys
 
-	//r.Info.SupportedNIPs = []any{1, 9, 11, 40, 42, 45, 70, 77, 86}
+	r.Info.SupportedNIPs = []any{1, 9, 11, 40, 42, 45, 70, 77, 86}
 
 	return vr
 }
