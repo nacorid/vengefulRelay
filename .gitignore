@@ -26,3 +26,7 @@ go.work
 
 # Log files
 *.log
+
+# Binary files
+*.bin
+bin/

@@ -69,7 +69,9 @@ func PaymentMiddlewareFromConfig(routes x402http.RoutesConfig, cfg MiddlewareCon
 			}
 
 			ctx := r.Context()
+			cfg.Logger.DebugContext(ctx, "processing payment middleware", "method", r.Method, "path", r.URL.Path, "query", r.URL.RawQuery)
 			result := httpServer.ProcessHTTPRequest(ctx, reqCtx, cfg.PaywallConfig)
+			cfg.Logger.DebugContext(ctx, "payment middleware result", "type", result.Type, "result", result)
 
 			switch result.Type {
 			case x402http.ResultNoPaymentRequired:

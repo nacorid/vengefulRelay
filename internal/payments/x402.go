@@ -58,6 +58,7 @@ func SetupMiddleware(cfg config.Config, st *store.Storage) func(http.Handler) ht
 					{Scheme: "exact", Price: "$0.50", Network: evmNetwork, PayTo: cfg.EVMWallet},
 					{Scheme: "exact", Price: "$0.50", Network: svmNetwork, PayTo: cfg.SVMWallet},
 				},
+				Resource:    "Vengeful Relay Admission",
 				Description: "Pay to register your nostr key",
 			},
 		},
@@ -69,7 +70,9 @@ func SetupMiddleware(cfg config.Config, st *store.Storage) func(http.Handler) ht
 		PaywallConfig: &x402http.PaywallConfig{
 			CDPClientKey: cfg.CDPClientKey,
 			AppName:      cfg.RelayName,
-			CurrentURL:   "https://relay.vengeful.eu/admission",
+			AppLogo:      cfg.RelayIcon,
+			CurrentURL:   cfg.RelayURL + "/admission",
+			Testnet:      false,
 		},
 		SettlementHandler: func(w http.ResponseWriter, r *http.Request, s *x402.SettleResponse) {
 			handleSettlement(w, r, s, st)
