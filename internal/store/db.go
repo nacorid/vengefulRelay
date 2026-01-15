@@ -297,6 +297,32 @@ func (s *Storage) ChangePubKeyState(ctx context.Context, pubkey string, pubkeySt
 	return err
 }
 
+func (s *Storage) VanishPubKey(ctx context.Context, pubkey string) error {
+	var ret error
+	_, err := s.DB.ExecContext(ctx,
+		`DELETE FROM known_pubkeys WHERE pubkey = $1`,
+		pubkey,
+	)
+	if err != nil {
+		ret = fmt.Errorf("Failed to vanish pubkey %s from known_pubkeys: %w", err)
+	}
+	_, err = s.DB.ExecContext(ctx,
+		`DELETE FROM invoices_paid WHERE pubkey = $1`,
+		pubkey,
+	)
+	if err != nil {
+		ret = fmt.Errorf("%w\nFailed to vanish pubkey %s from invoices_paid: %w", ret, err)
+	}
+	_, err = s.DB.ExecContext(ctx,
+		`DELETE FROM event WHERE pubkey = $1`,
+		pubkey,
+	)
+	if err != nil {
+		ret = fmt.Errorf("%w\nFailed to vanish pubkey %s from events: %w", ret, err)
+	}
+	return ret
+}
+
 func toNBDFilter(f nostr.Filter) nbd.Filter {
 	var ids []string
 	for _, id := range f.IDs {

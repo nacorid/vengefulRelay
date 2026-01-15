@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"time"
 
 	"fiatjaf.com/nostr"
@@ -36,6 +37,10 @@ func (vr *VengefulRelay) signaturePolicy(ctx context.Context, evt nostr.Event) (
 func (vr *VengefulRelay) paymentPolicy(ctx context.Context, evt nostr.Event) (bool, string) {
 	// 1. Check Whitelist
 	if slices.Contains(vr.Config.Whitelist, evt.PubKey.Hex()) {
+		return false, ""
+	}
+
+	if evt.Kind == 62 {
 		return false, ""
 	}
 
@@ -73,6 +78,9 @@ func (vr *VengefulRelay) eventLengthPolicy(ctx context.Context, evt nostr.Event)
 }
 
 func (vr *VengefulRelay) proofOfWorkPolicy(ctx context.Context, evt nostr.Event) (bool, string) {
+	if evt.Kind == 62 {
+		return false, ""
+	}
 	if err := nip13.Check(evt.ID, vr.Config.MinPowDifficulty); err != nil {
 		return true, "pow: difficulty 20 required"
 	}
@@ -88,4 +96,56 @@ func (vr *VengefulRelay) timestampPolicy(ctx context.Context, evt nostr.Event) (
 		return true, "invalid: timestamp too old"
 	}
 	return false, ""
+}
+
+// nip62Policy validates that a Request to Vanish targets THIS relay.
+func (vr *VengefulRelay) nip62Policy(ctx context.Context, event nostr.Event) (bool, string) {
+	if event.Kind != 62 {
+		return false, ""
+	}
+
+	if event.VerifySignature() == false {
+		return true, "invalid signature on NIP-62 vanish request"
+	}
+
+	// 1. Find the "relay" tag
+	targetRelay := ""
+	for _, tag := range event.Tags {
+		if len(tag) >= 2 && tag[0] == "relay" {
+			targetRelay = tag[1]
+			break
+		}
+	}
+
+	if targetRelay == "" {
+		return true, "blocked: kind 62 missing 'relay' tag"
+	}
+
+	if targetRelay == "ALL_RELAYS" {
+		return false, ""
+	}
+
+	// 2. Compare against our Config.RelayURL
+	// We normalize (remove trailing slash, ignore scheme if needed) for better matching
+	myURL := normalizeURL(vr.Config.RelayURL)
+	targetURL := normalizeURL(targetRelay)
+
+	if myURL != targetURL {
+		// NIP-62 says: "Relays... SHOULD NOT operate on requests not targeting them."
+		// We reject it so we don't store a vanish request meant for someone else.
+		return true, "blocked: vanish request not targeting this relay"
+	}
+
+	// Validation passed.
+	return false, ""
+}
+
+// normalizeURL is a helper to compare relay URLs loosely (ws:// == wss:// == https://)
+func normalizeURL(u string) string {
+	u = strings.TrimSpace(u)
+	u = strings.TrimSuffix(u, "/")
+	if idx := strings.Index(u, "://"); idx != -1 {
+		u = u[idx+3:]
+	}
+	return u
 }

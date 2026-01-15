@@ -97,6 +97,12 @@ func cleanupDatabase(t *testing.T, db *sql.DB) {
 	}
 }
 
+func sign(sk nostr.SecretKey) func(ctx context.Context, e *nostr.Event) error {
+	return func(ctx context.Context, e *nostr.Event) error {
+		return e.Sign(sk)
+	}
+}
+
 // generateTestUser creates a keypair for a test client
 func generateTestUser() (nostr.SecretKey, nostr.PubKey) {
 
@@ -142,7 +148,7 @@ func TestNIP01_BasicFlow(t *testing.T) {
 	err = relay.Publish(ctx, ev)
 	if err != nil {
 		if strings.Contains(err.Error(), "auth-required") {
-			if authErr := relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(sk) }); authErr != nil {
+			if authErr := relay.Auth(ctx, sign(sk)); authErr != nil {
 				t.Fatalf("Auth failed: %v", authErr)
 			}
 		}
@@ -195,7 +201,7 @@ func TestNIP09_Deletion(t *testing.T) {
 	err = relay.Publish(ctx, ev1)
 	if err != nil {
 		if strings.Contains(err.Error(), "auth-required") {
-			if authErr := relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(sk) }); authErr != nil {
+			if authErr := relay.Auth(ctx, sign(sk)); authErr != nil {
 				t.Fatalf("Auth failed: %v", authErr)
 			}
 		}
@@ -319,7 +325,7 @@ func TestNIP40_Expiration(t *testing.T) {
 	err = relay.Publish(ctx, evFuture)
 	if err != nil {
 		if strings.Contains(err.Error(), "auth-required") {
-			if authErr := relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(sk) }); authErr != nil {
+			if authErr := relay.Auth(ctx, sign(sk)); authErr != nil {
 				t.Fatalf("Auth failed: %v", authErr)
 			}
 		}
@@ -396,9 +402,7 @@ func TestNIP42_Authentication(t *testing.T) {
 	}*/
 
 	// Send Auth
-	err = relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error {
-		return evt.Sign(sk)
-	})
+	err = relay.Auth(ctx, sign(sk))
 
 	// In a real integration test using nostr-sdk, .Auth() handles the sending.
 	// To be very specific, we can manually send:
@@ -436,7 +440,7 @@ func TestNIP45_Count(t *testing.T) {
 		err := relay.Publish(ctx, ev)
 		if err != nil {
 			if strings.Contains(err.Error(), "auth-required") {
-				if authErr := relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(sk) }); authErr != nil {
+				if authErr := relay.Auth(ctx, sign(sk)); authErr != nil {
 					t.Fatalf("Auth failed: %v", authErr)
 				}
 			}
@@ -460,6 +464,101 @@ func TestNIP45_Count(t *testing.T) {
 	// If Store is working, count should be 2. If mock store is nil/empty, might be 0.
 	// We just test that the command didn't error out (NIP-45 supported).
 	t.Logf("Count returned: %d", count)
+}
+
+// -----------------------------------------------------------------------------
+// NIP-62: Request to Vanish
+// -----------------------------------------------------------------------------
+
+func TestNIP62_RequestToVanish(t *testing.T) {
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	vr.Config.RelayURL = wsURL
+
+	// Whitelist user to bypass payments/restrictions
+	sk, pk := generateTestUser()
+	vr.InternalChangePubKey(context.Background(), pk.Hex(), store.PubKeyAllowed, "")
+
+	ctx := context.Background()
+	relay, err := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer relay.Close()
+
+	// 1. Publish some data (Kind 1)
+	ev := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		Content:   "This text should disappear",
+	}
+	ev.Sign(sk)
+
+	err = relay.Publish(ctx, ev)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relay.Auth(ctx, sign(sk)); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relay.Publish(ctx, ev)
+		if err != nil {
+			t.Fatalf("Failed to publish setup event: %v", err)
+		}
+	}
+
+	// Verify the event is actually stored
+	sub1, _ := relay.Subscribe(ctx, nostr.Filter{IDs: []nostr.ID{ev.ID}}, nostr.SubscriptionOptions{})
+	select {
+	case <-sub1.Events:
+		// Found it, good.
+	case <-time.After(1 * time.Second):
+		t.Fatal("Setup failed: Relay did not return the event we just published")
+	}
+	sub1.Unsub()
+
+	// 2. Publish Request to Vanish (Kind 62)
+	vanishEv := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      62,
+		Tags: nostr.Tags{
+			{"relay", wsURL},
+		},
+		Content: "Delete my data please",
+	}
+	vanishEv.Sign(sk)
+
+	err = relay.Publish(ctx, vanishEv)
+	if err != nil {
+		t.Fatalf("Failed to publish NIP-62 request: %v", err)
+	}
+
+	time.Sleep(250 * time.Millisecond)
+
+	// 3. Verify Data is Gone
+	subCheck, _ := relay.Subscribe(ctx, nostr.Filter{
+		Authors: []nostr.PubKey{pk},
+		Kinds:   []nostr.Kind{1},
+	}, nostr.SubscriptionOptions{})
+
+	foundOldEvent := false
+	select {
+	case e := <-subCheck.Events:
+		if e.ID == ev.ID {
+			foundOldEvent = true
+		}
+	case <-subCheck.EndOfStoredEvents:
+		// Normal completion
+	case <-time.After(1 * time.Second):
+		// Timeout
+	}
+
+	if foundOldEvent {
+		t.Errorf("NIP-62 Failure: Kind 1 event (id: %s) still exists after Request to Vanish", ev.ID)
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -503,7 +602,7 @@ func TestNIP70_ProtectedEvents(t *testing.T) {
 	err = relayA.Publish(ctx, protectedEv)
 	if err != nil {
 		if strings.Contains(err.Error(), "auth-required") {
-			if authErr := relayA.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(skA) }); authErr != nil {
+			if authErr := relayA.Auth(ctx, sign(skA)); authErr != nil {
 				t.Fatalf("Auth failed: %v", authErr)
 			}
 		}
@@ -535,7 +634,7 @@ func TestNIP70_ProtectedEvents(t *testing.T) {
 	// NIP-70 implies: "Relays SHOULD NOT publish these events to clients that are not authenticated."
 	// It doesn't strictly mean ONLY the author can see it, just that you must be AUTH'd.
 	relayB, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
-	relayB.Auth(ctx, func(ctx context.Context, e *nostr.Event) error { return e.Sign(skB) })
+	relayB.Auth(ctx, sign(skB))
 
 	subB, _ := relayB.Subscribe(ctx, nostr.Filter{IDs: []nostr.ID{protectedEv.ID}}, nostr.SubscriptionOptions{})
 
@@ -670,7 +769,7 @@ func TestNIP86_Management(t *testing.T) {
 
 	// Authenticate as Admin
 	time.Sleep(50 * time.Millisecond)
-	relay.Auth(ctx, func(ctx context.Context, evt *nostr.Event) error { return evt.Sign(sk) })
+	relay.Auth(ctx, sign(sk))
 
 	// Construct NIP-86 Request: ["REQ", "id", {"method": "...", "params": [...]}]
 	// go-nostr doesn't have a direct helper for NIP-86 generic calls yet in the high level client,

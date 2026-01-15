@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/config"
@@ -14,6 +15,7 @@ type Server struct {
 	Config     config.Config
 	Store      *store.Storage
 	LNProvider *lightning.Provider
+	Logger     *slog.Logger
 }
 
 func (s *Server) HandleWebpage(w http.ResponseWriter, r *http.Request) {
@@ -59,6 +61,11 @@ document.querySelector('form').addEventListener('submit', async ev => {
     `, s.Config.RelayName, s.Config.RelayName, s.Config.RelayDescription, s.Config.AdmissionFee)))
 }
 
+func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(200)
+	w.Write([]byte("ok"))
+}
+
 func (s *Server) HandleInvoice(w http.ResponseWriter, r *http.Request) {
 	pubkey := r.URL.Query().Get("pubkey")
 	if pubkey == "" {
@@ -93,6 +100,46 @@ func (s *Server) HandleCheck(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]bool{"paid": true})
 	} else {
 		json.NewEncoder(w).Encode(map[string]bool{"paid": false})
+	}
+}
+
+func (s *Server) HandleOpenNodeCallback(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		ID           string `json:"id"`
+		CallbackURL  string `json:"callback_url"`
+		SuccessURL   string `json:"success_url"`
+		Status       string `json:"status"`
+		OrderID      string `json:"order_id"`
+		Description  string `json:"description"`
+		Price        string `json:"price"`
+		Fee          string `json:"fee"`
+		AutoSettle   string `json:"auto_settle"`
+		HashedOrder  string `json:"hashed_order"`
+		Transactions []struct {
+			Address   string `json:"address"`
+			CreatedAt string `json:"created_at"`
+			SettledAt string `json:"settled_at"`
+			TX        string `json:"tx"`
+			Status    string `json:"status"`
+			Amount    string `json:"amount"`
+		} `json:"transactions,omitempty"`
+		MissingAmount string `json:"missing_amt,omitempty"`
+		OverpaidBy    string `json:"overpaid_by,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		s.Logger.Error("failed to decode opennode callback", "error", err)
+		w.Write([]byte("OK"))
+	}
+	if payload.Status == "paid" {
+		var pubkey string
+		fmt.Sscanf(payload.OrderID, "Admission for %s", &pubkey)
+		var txId string
+		if len(payload.Transactions) > 0 {
+			txId = payload.Transactions[0].TX
+		} else {
+			txId = payload.ID
+		}
+		s.Store.RegisterPayment(pubkey, txId, "BTC", "unknown", "lightning", "opennode")
 	}
 }
 

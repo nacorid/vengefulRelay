@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -24,9 +25,9 @@ type auth struct {
 }
 
 func (a *auth) GetAuthHeaders(ctx context.Context) (x402http.AuthHeaders, error) {
-	verify, _ := a.coinbaseSigner.GenerateBearerToken("POST", "/verify")
-	settle, _ := a.coinbaseSigner.GenerateBearerToken("POST", "/settle")
-	supported, _ := a.coinbaseSigner.GenerateBearerToken("GET", "/supported")
+	verify, _ := a.coinbaseSigner.GenerateBearerToken("POST", "/platform/v2/x402/verify")
+	settle, _ := a.coinbaseSigner.GenerateBearerToken("POST", "/platform/v2/x402/settle")
+	supported, _ := a.coinbaseSigner.GenerateBearerToken("GET", "/platform/v2/x402/supported")
 	return x402http.AuthHeaders{
 		Verify:    map[string]string{"Authorization": "Bearer " + verify},
 		Settle:    map[string]string{"Authorization": "Bearer " + settle},
@@ -58,8 +59,9 @@ func SetupMiddleware(cfg config.Config, st *store.Storage) func(http.Handler) ht
 					{Scheme: "exact", Price: "$0.50", Network: evmNetwork, PayTo: cfg.EVMWallet},
 					{Scheme: "exact", Price: "$0.50", Network: svmNetwork, PayTo: cfg.SVMWallet},
 				},
-				Resource:    "Vengeful Relay Admission",
+				Resource:    fmt.Sprintf("%s Admission", cfg.RelayName),
 				Description: "Pay to register your nostr key",
+				//CustomPaywallHTML: customPaywallHTML,
 			},
 		},
 		FacilitatorClients: []x402.FacilitatorClient{client},

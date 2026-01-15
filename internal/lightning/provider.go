@@ -14,17 +14,17 @@ func NewProvider(url, key string) *Provider {
 }
 
 func (p *Provider) GenerateInvoice(amountSats int64, memo string) (string, string, error) {
-	body := map[string]interface{}{
-		"out":    false,
-		"amount": amountSats,
-		"memo":   memo,
-		"expiry": 3600,
-		"unit":   "sat",
+	body := map[string]any{
+		"amount":       amountSats,
+		"description":  memo,
+		"order_id":     fmt.Sprintf("%s-%d", memo, time.Now().Unix()),
+		"callback_url": "",
+		"expiry":       3600,
 	}
 	jsonBody, _ := json.Marshal(body)
 
-	req, _ := http.NewRequest("POST", p.URL+"/api/v1/payments", bytes.NewBuffer(jsonBody))
-	req.Header.Set("X-Api-Key", p.Key)
+	req, _ := http.NewRequest("POST", p.URL+"/v1/charges", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Authorization", p.Key)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := p.client.Do(req)
@@ -34,7 +34,7 @@ func (p *Provider) GenerateInvoice(amountSats int64, memo string) (string, strin
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return "", "", fmt.Errorf("lnbits returned status %d", resp.StatusCode)
+		return "", "", fmt.Errorf("opennode returned status %d", resp.StatusCode)
 	}
 
 	var res InvoiceResponse
@@ -47,7 +47,7 @@ func (p *Provider) GenerateInvoice(amountSats int64, memo string) (string, strin
 
 func (p *Provider) CheckPayment(paymentHash string) bool {
 	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/payments/%s", p.URL, paymentHash), nil)
-	req.Header.Set("X-Api-Key", p.Key)
+	req.Header.Set("Authorization", p.Key)
 
 	resp, err := p.client.Do(req)
 	if err != nil {

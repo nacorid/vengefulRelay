@@ -22,9 +22,10 @@ type Config struct {
 	FreeRelay        bool     `default:"false" envconfig:"FREE_RELAY"`
 
 	// Lightning (LNBits/Alby compatible)
-	LNBitsURL    string `envconfig:"LNBITS_URL"` // e.g. https://legend.lnbits.com
-	LNBitsKey    string `envconfig:"LNBITS_KEY"` // Invoice/Read key
-	AdmissionFee int64  `default:"100" envconfig:"ADMISSION_FEE"`
+	LNBitsURL      string `envconfig:"LNBITS_URL"` // e.g. https://legend.lnbits.com
+	LNBitsKey      string `envconfig:"LNBITS_KEY"` // Invoice/Read key
+	OpenNodeApiKey string `envconfig:"OPENNODE_API_KEY"`
+	AdmissionFee   int64  `default:"100" envconfig:"ADMISSION_FEE"`
 
 	// x402 / CDP
 	CDPAPIKeyName   string `envconfig:"CDP_API_KEY_NAME"`

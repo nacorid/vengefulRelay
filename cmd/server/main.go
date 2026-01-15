@@ -41,13 +41,16 @@ func main() {
 		Config:     cfg,
 		Store:      db,
 		LNProvider: lnProvider,
+		Logger:     logger,
 	}
 
 	mux := khatruRelay.Router()
 
 	mux.HandleFunc("/", webHandler.HandleWebpage)
+	mux.HandleFunc("/healthz", webHandler.HandleHealthz)
 	mux.HandleFunc("/invoice", webHandler.HandleInvoice)
-	mux.HandleFunc("/check", webHandler.HandleCheck) // New endpoint for polling payment status
+	mux.HandleFunc("/check", webHandler.HandleCheck)
+	mux.HandleFunc("/opennode/callback", webHandler.HandleOpenNodeCallback)
 
 	if cfg.CDPClientKey != "" {
 		x402Middleware := payments.SetupMiddleware(cfg, db)
