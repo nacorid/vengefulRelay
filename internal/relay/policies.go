@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -31,7 +32,7 @@ func (vr *VengefulRelay) signaturePolicy(ctx context.Context, evt nostr.Event) (
 	if ok {
 		return false, ""
 	}
-	return true, "invalid signature"
+	return true, "blocked: invalid signature"
 }
 
 func (vr *VengefulRelay) paymentPolicy(ctx context.Context, evt nostr.Event) (bool, string) {
@@ -41,6 +42,10 @@ func (vr *VengefulRelay) paymentPolicy(ctx context.Context, evt nostr.Event) (bo
 	}
 
 	if evt.Kind == 62 {
+		return false, ""
+	}
+
+	if (evt.Kind == 4 || evt.Kind == 1059) && evt.Tags.ContainsAny("p", nil) {
 		return false, ""
 	}
 
@@ -72,7 +77,7 @@ func (vr *VengefulRelay) paymentPolicy(ctx context.Context, evt nostr.Event) (bo
 func (vr *VengefulRelay) eventLengthPolicy(ctx context.Context, evt nostr.Event) (bool, string) {
 	jsonb, _ := json.Marshal(evt)
 	if len(jsonb) > vr.Config.MaxEventLength {
-		return true, "event too large"
+		return true, "blocked: event too large"
 	}
 	return false, ""
 }
@@ -81,8 +86,9 @@ func (vr *VengefulRelay) proofOfWorkPolicy(ctx context.Context, evt nostr.Event)
 	if evt.Kind == 62 {
 		return false, ""
 	}
-	if err := nip13.Check(evt.ID, vr.Config.MinPowDifficulty); err != nil {
-		return true, "pow: difficulty 20 required"
+	err := nip13.Check(evt.ID, vr.Config.MinPowDifficulty)
+	if err != nil {
+		return true, fmt.Sprintf("restricted: nip13 difficulty %d required", vr.Config.MinPowDifficulty)
 	}
 	return false, ""
 }
@@ -90,27 +96,35 @@ func (vr *VengefulRelay) proofOfWorkPolicy(ctx context.Context, evt nostr.Event)
 func (vr *VengefulRelay) timestampPolicy(ctx context.Context, evt nostr.Event) (bool, string) {
 	now := time.Now()
 	if evt.CreatedAt.Time().After(now.Add(15 * time.Minute)) {
-		return true, "invalid: timestamp in future"
+		return true, "blocked: timestamp in future"
 	}
 	if evt.CreatedAt.Time().Before(now.Add(-48 * time.Hour)) {
-		return true, "invalid: timestamp too old"
+		return true, "blocked: timestamp too old"
 	}
 	return false, ""
 }
 
 // nip62Policy validates that a Request to Vanish targets THIS relay.
-func (vr *VengefulRelay) nip62Policy(ctx context.Context, event nostr.Event) (bool, string) {
-	if event.Kind != 62 {
+func (vr *VengefulRelay) nip62Policy(ctx context.Context, evt nostr.Event) (bool, string) {
+	if evt.Kind != 62 {
 		return false, ""
 	}
+	pubkey, ok := khatru.GetAuthed(ctx)
+	if !ok {
+		khatru.RequestAuth(ctx)
+		return true, "auth-required: please authenticate"
+	}
+	if pubkey != evt.PubKey {
+		return true, "blocked: must be author of NIP-62 vanish request"
+	}
 
-	if event.VerifySignature() == false {
-		return true, "invalid signature on NIP-62 vanish request"
+	if evt.VerifySignature() == false {
+		return true, "blocked: invalid signature on NIP-62 vanish request"
 	}
 
 	// 1. Find the "relay" tag
 	targetRelay := ""
-	for _, tag := range event.Tags {
+	for _, tag := range evt.Tags {
 		if len(tag) >= 2 && tag[0] == "relay" {
 			targetRelay = tag[1]
 			break

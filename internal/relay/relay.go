@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"context"
 	"log/slog"
 
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/config"
@@ -47,7 +46,7 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *s
 	r.Info.Limitation = &nip11.RelayLimitationDocument{
 		MaxMessageLength: cfg.MaxEventLength,
 		MinPowDifficulty: cfg.MinPowDifficulty,
-		AuthRequired:     true,
+		//AuthRequired:     true,
 		PaymentRequired:  true,
 		RestrictedWrites: true,
 	}
@@ -66,7 +65,7 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *s
 	r.Info.Software = "git.vengeful.eu/nacorid/vengefulRelay"
 	r.Info.Version = "0.1.0"
 
-	r.OnRequest = policies.SeqRequest(policies.MustAuth, policies.AntiSyncBots, policies.NoEmptyFilters)
+	r.OnRequest = policies.SeqRequest(policies.AntiSyncBots, policies.NoEmptyFilters)
 	r.OnEvent = policies.SeqEvent(
 		vr.authPolicy,
 		vr.nip62Policy,
@@ -76,7 +75,7 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *s
 		vr.proofOfWorkPolicy,
 		vr.timestampPolicy,
 	)
-	r.OnConnect = func(ctx context.Context) { khatru.RequestAuth(ctx) }
+	//r.OnConnect = func(ctx context.Context) { khatru.RequestAuth(ctx) }
 
 	r.Log = slog.NewLogLogger(logger.Handler(), slog.LevelDebug)
 
@@ -90,7 +89,32 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *s
 	r.ManagementAPI.ListAllowedPubKeys = vr.ListAllowedPubKeys
 	r.ManagementAPI.ListBannedPubKeys = vr.ListBannedPubKeys
 
-	r.Info.SupportedNIPs = []any{1, 9, 11, 40, 42, 45, 62, 70, 77, 86}
+	r.Info.SupportedNIPs = []any{
+		1,
+		2,
+		4,
+		9,
+		11,
+		12,
+		13,
+		15,
+		16,
+		17,
+		20,
+		22,
+		25,
+		28,
+		33,
+		40,
+		42,
+		45,
+		51,
+		56,
+		62,
+		70,
+		77,
+		86,
+	}
 
 	return vr
 }

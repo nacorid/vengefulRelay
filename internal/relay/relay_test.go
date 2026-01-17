@@ -3,8 +3,10 @@ package relay_test
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -67,7 +69,8 @@ func setupTestRelay(t *testing.T) (*httptest.Server, *relay.VengefulRelay, strin
 
 	// 5. Initialize Relay
 	// Passing nil logger for cleaner test output
-	vr := relay.New(cfg, st, ln, nil)
+	l := slog.New(slog.NewTextHandler(t.Output(), &slog.HandlerOptions{Level: slog.LevelDebug}))
+	vr := relay.New(cfg, st, ln, l)
 	ts := httptest.NewServer(vr)
 	wsURL := strings.Replace(ts.URL, "http", "ws", 1)
 
@@ -112,6 +115,57 @@ func generateTestUser() (nostr.SecretKey, nostr.PubKey) {
 }
 func getOwnerKeys() (nostr.SecretKey, nostr.PubKey) {
 	return relaySk, relayPk
+}
+
+func mineEvent(ev *nostr.Event, targetDiff int) {
+	var nonce uint64 = 0
+	for {
+		// Update the Nonce Tag
+		// Format: ["nonce", "nonce_string", "target_difficulty_string"]
+		ev.Tags = nostr.Tags{
+			{"nonce", fmt.Sprintf("%d", nonce), fmt.Sprintf("%d", targetDiff)},
+		}
+
+		// Recalculate ID
+		ev.ID = ev.GetID()
+
+		// Check Difficulty
+		// nostr.CheckProofOfWork returns true if the ID meets the target
+		if checkPoW(ev.ID.Hex(), targetDiff) {
+			return
+		}
+
+		nonce++
+		// prevent infinite loop in case of bad logic (8 bits should take microseconds)
+		if nonce > 1000000 {
+			panic("mining took too long for low difficulty")
+		}
+	}
+}
+
+// checkPoW counts leading zero bits in the hex ID
+func checkPoW(idHex string, target int) bool {
+	// Simple implementation for test purposes
+	// Convert hex to bytes
+	bytes, _ := hex.DecodeString(idHex)
+
+	zeros := 0
+	for _, b := range bytes {
+		if b == 0 {
+			zeros += 8
+		} else {
+			// Count leading zeros in this byte
+			for i := 7; i >= 0; i-- {
+				if (b>>i)&1 == 0 {
+					zeros++
+				} else {
+					break
+				}
+			}
+			break
+		}
+	}
+	return zeros >= target
 }
 
 // -----------------------------------------------------------------------------
@@ -175,6 +229,201 @@ func TestNIP01_BasicFlow(t *testing.T) {
 		// Valid behavior if store is empty
 	case <-time.After(1 * time.Second):
 		t.Error("Timeout waiting for event or EOSE")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// NIP-02: Contact List and Petnames
+// -----------------------------------------------------------------------------
+
+func TestNIP02_ContactList(t *testing.T) {
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	sk, pk := generateTestUser()
+	// Whitelist user
+	vr.InternalChangePubKey(context.Background(), pk.Hex(), store.PubKeyAllowed, "")
+
+	ctx := context.Background()
+	relay, err := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer relay.Close()
+
+	// --- 1. Publish Initial Contact List (Version A) ---
+	contactA := "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
+
+	listV1 := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now() - 100, // Older time
+		Kind:      3,                 // KindContactList
+		Content:   "",
+		Tags: nostr.Tags{
+			{"p", contactA, "wss://relay.damus.io", "alice"},
+		},
+	}
+	listV1.Sign(sk)
+
+	err = relay.Publish(ctx, listV1)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relay.Auth(ctx, sign(sk)); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relay.Publish(ctx, listV1)
+		if err != nil {
+			t.Fatalf("Failed to publish NIP-02 list v1: %v", err)
+		}
+	}
+
+	// --- 2. Publish Updated Contact List (Version B) ---
+	contactB := "7e7e9c42a91bfef19fa929e5fda8b151097f5a51df70d89292c892839211d293"
+
+	listV2 := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(), // Newer time
+		Kind:      3,
+		Content:   "",
+		Tags: nostr.Tags{
+			// Replaces list. Now follows Contact B.
+			{"p", contactB, "wss://nos.lol", "bob"},
+		},
+	}
+	listV2.Sign(sk)
+
+	err = relay.Publish(ctx, listV2)
+	if err != nil {
+		t.Fatalf("Failed to publish NIP-02 list v2: %v", err)
+	}
+
+	// --- 3. Verify Replacement ---
+	// NIP-02 (and NIP-01 replaceable events) dictates that a query for Kind 3
+	// for a specific author should return ONLY the newest event.
+
+	sub, _ := relay.Subscribe(ctx, nostr.Filter{
+		Authors: []nostr.PubKey{pk},
+		Kinds:   []nostr.Kind{3},
+	}, nostr.SubscriptionOptions{})
+
+	var events []nostr.Event
+
+Loop:
+	for {
+		select {
+		case e := <-sub.Events:
+			events = append(events, e)
+		case <-sub.EndOfStoredEvents:
+			break Loop
+		case <-time.After(1 * time.Second):
+			break Loop
+		}
+	}
+
+	// Assertions
+	if len(events) == 0 {
+		t.Fatal("NIP-02 Failure: No contact list returned")
+	}
+
+	if len(events) > 1 {
+		t.Errorf("NIP-02 Failure: Expected 1 replaceable event, got %d. Relay didn't replace the old list.", len(events))
+	}
+
+	got := events[0]
+	if got.ID != listV2.ID {
+		t.Errorf("NIP-02 Failure: Returned event ID %s (old), expected %s (new)", got.ID, listV2.ID)
+	}
+
+	// Verify content/tags of the latest one
+	if len(got.Tags) < 1 || got.Tags[0][1] != contactB {
+		t.Error("NIP-02 Failure: Returned event data does not match the latest update")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// NIP-04: Encrypted Direct Messages
+// -----------------------------------------------------------------------------
+
+func TestNIP04_DirectMessages(t *testing.T) {
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	// Alice (Sender) and Bob (Receiver)
+	skAlice, pkAlice := generateTestUser()
+	_, pkBob := generateTestUser()
+
+	// Whitelist both to bypass payment checks
+	ctx := context.Background()
+	vr.InternalChangePubKey(ctx, pkAlice.Hex(), store.PubKeyAllowed, "")
+	vr.InternalChangePubKey(ctx, pkBob.Hex(), store.PubKeyAllowed, "")
+
+	// --- 1. Alice connects ---
+	relayAlice, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	defer relayAlice.Close()
+
+	// --- 2. Bob connects ---
+	relayBob, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	defer relayBob.Close()
+
+	// --- 3. Alice Sends DM to Bob ---
+	// Note: In a real client, content is encrypted. For a relay test,
+	// we only care that Kind=4 and Tags are handled correctly.
+	dmEvent := nostr.Event{
+		PubKey:    pkAlice,
+		CreatedAt: nostr.Now(),
+		Kind:      4,
+		Tags:      nostr.Tags{{"p", pkBob.Hex()}},
+		Content:   "fake-encrypted-content-base64",
+	}
+	dmEvent.Sign(skAlice)
+
+	err := relayAlice.Publish(ctx, dmEvent)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relayAlice.Auth(ctx, sign(skAlice)); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relayAlice.Publish(ctx, dmEvent)
+		if err != nil {
+			t.Fatalf("Failed to publish NIP-04 DM: %v", err)
+		}
+	}
+
+	// --- 4. Bob Retrieves his DMs ---
+	// Bob filters by Kind 4 and #p = his pubkey
+	subBob, _ := relayBob.Subscribe(ctx, nostr.Filter{
+		Kinds: []nostr.Kind{4},
+		Tags:  nostr.TagMap{"p": []string{pkBob.Hex()}},
+	}, nostr.SubscriptionOptions{})
+
+	select {
+	case e := <-subBob.Events:
+		if e.ID != dmEvent.ID {
+			t.Error("Bob received wrong DM event")
+		}
+		if e.Content != "fake-encrypted-content-base64" {
+			t.Error("Content corrupted")
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("NIP-04 Failure: Bob did not receive the DM sent to him")
+	}
+
+	// --- 5. Alice Retrieves her Sent DMs ---
+	// Alice filters by Kind 4 and Authors = her pubkey
+	subAlice, _ := relayAlice.Subscribe(ctx, nostr.Filter{
+		Kinds:   []nostr.Kind{4},
+		Authors: []nostr.PubKey{pkAlice},
+	}, nostr.SubscriptionOptions{})
+
+	select {
+	case e := <-subAlice.Events:
+		if e.ID != dmEvent.ID {
+			t.Error("Alice received wrong DM event")
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("NIP-04 Failure: Alice could not retrieve her own sent DM")
 	}
 }
 
@@ -295,6 +544,633 @@ func TestNIP11_RelayInfo(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
+// NIP-13: Proof of Work
+// -----------------------------------------------------------------------------
+
+func TestNIP13_ProofOfWork(t *testing.T) {
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	// 1. Configure the Relay to require PoW
+	// We set a low difficulty (8 bits) so the test runs instantly but still validates logic.
+	const requiredDifficulty = 8
+	vr.Config.MinPowDifficulty = requiredDifficulty
+
+	// Update NIP-11 info to reflect this (optional for logic, good for consistency)
+	vr.Info.Limitation.MinPowDifficulty = requiredDifficulty
+
+	// Create a user
+	sk, pk := generateTestUser()
+	ctx := context.Background()
+
+	// Whitelist user (if necessary) to bypass other checks like payment,
+	// focusing strictly on PoW.
+	vr.InternalChangePubKey(ctx, pk.Hex(), store.PubKeyAllowed, "")
+
+	relay, err := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer relay.Close()
+
+	// --- Test Case 1: Insufficient PoW (Should Fail) ---
+	badEvent := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		Content:   "Lazy event without work",
+		// No nonce tag, or insufficient nonce
+	}
+	badEvent.Sign(sk)
+	t.Logf("Bad Event ID: %s", badEvent.ID.Hex())
+	err = relay.Publish(ctx, badEvent)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relay.Auth(ctx, sign(sk)); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relay.Publish(ctx, badEvent)
+		if err == nil {
+			t.Fatal("NIP-13 Failure: Relay accepted event with NO Proof of Work, expected rejection.")
+		}
+	}
+
+	// --- Test Case 2: Sufficient PoW (Should Pass) ---
+	goodEvent := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		Content:   "Hard working event",
+	}
+
+	// Mine the event
+	// We need to add a ["nonce", "nonce_val", "target_difficulty"] tag
+	// and keep changing nonce_val until ID has enough leading zeros.
+	mineEvent(&goodEvent, requiredDifficulty)
+	goodEvent.Sign(sk)
+
+	err = relay.Publish(ctx, goodEvent)
+	if err != nil {
+		t.Fatalf("Failed to publish valid PoW event: %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// NIP-15: Nostr Marketplace (Stalls and Products)
+// -----------------------------------------------------------------------------
+
+func TestNIP15_Marketplace(t *testing.T) {
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	sk, pk := generateTestUser()
+	vr.InternalChangePubKey(context.Background(), pk.Hex(), store.PubKeyAllowed, "")
+
+	ctx := context.Background()
+	relay, err := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer relay.Close()
+
+	// --- 1. Create a Stall (Kind 30017) ---
+	// Stalls are Parameterized Replaceable Events (d-tag).
+	stallID := "my-awesome-stall"
+	stall := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      30017,
+		Tags: nostr.Tags{
+			{"d", stallID},
+			{"name", "Bitcorn General Store"},
+			{"currency", "SAT"},
+		},
+		Content: `{"description": "Selling the finest corns"}`,
+	}
+	stall.Sign(sk)
+
+	err = relay.Publish(ctx, stall)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relay.Auth(ctx, sign(sk)); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relay.Publish(ctx, stall)
+		if err != nil {
+			t.Fatalf("Failed to publish Stall: %v", err)
+		}
+	}
+
+	// --- 2. Create a Product (Kind 30018) ---
+	// Products are linked to stalls and are also Parameterized Replaceable.
+	productID := "corn-kernel-v1"
+	productV1 := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      30018,
+		Tags: nostr.Tags{
+			{"d", productID},
+			{"stall_id", stallID}, // Link to stall
+			{"t", "food"},
+		},
+		Content: `{"name": "Single Corn Kernel", "price": 10}`,
+	}
+	productV1.Sign(sk)
+
+	err = relay.Publish(ctx, productV1)
+	if err != nil {
+		t.Fatalf("Failed to publish Product V1: %v", err)
+	}
+
+	// --- 3. Verify Storage ---
+	// Fetch the product
+	sub, _ := relay.Subscribe(ctx, nostr.Filter{
+		Authors: []nostr.PubKey{pk},
+		Kinds:   []nostr.Kind{30018},
+		Tags:    nostr.TagMap{"d": []string{productID}},
+	}, nostr.SubscriptionOptions{})
+
+	select {
+	case e := <-sub.Events:
+		if e.ID != productV1.ID {
+			t.Error("Marketplace: Retrieved wrong product event")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Marketplace: Failed to retrieve product")
+	}
+
+	// --- 4. Update Product (NIP-01 Parameterized Replacement) ---
+	// We change the price. The "d" tag stays the same.
+	// The relay should Replace the old event with this one.
+	productV2 := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now() + 10, // Must be newer
+		Kind:      30018,
+		Tags: nostr.Tags{
+			{"d", productID}, // Same ID
+			{"stall_id", stallID},
+		},
+		Content: `{"name": "Single Corn Kernel", "price": 20}`, // Inflation!
+	}
+	productV2.Sign(sk)
+
+	relay.Publish(ctx, productV2)
+
+	// --- 5. Verify Replacement ---
+	// Querying for this product ID should now return ONLY Version 2
+	sub2, _ := relay.Subscribe(ctx, nostr.Filter{
+		Authors: []nostr.PubKey{pk},
+		Kinds:   []nostr.Kind{30018},
+		Tags:    nostr.TagMap{"d": []string{productID}},
+	}, nostr.SubscriptionOptions{})
+
+	var events []nostr.Event
+Loop:
+	for {
+		select {
+		case e := <-sub2.Events:
+			events = append(events, e)
+		case <-sub2.EndOfStoredEvents:
+			break Loop
+		case <-time.After(1 * time.Second):
+			break Loop
+		}
+	}
+
+	if len(events) != 1 {
+		t.Errorf("Marketplace: Expected 1 product event after update, got %d", len(events))
+	} else {
+		if events[0].Content != productV2.Content {
+			t.Error("Marketplace: Relay returned old product version, replacement failed")
+		}
+	}
+}
+
+// -----------------------------------------------------------------------------
+// NIP-17: Private Direct Messages (Gift Wraps)
+// -----------------------------------------------------------------------------
+
+func TestNIP17_GiftWraps(t *testing.T) {
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	skAlice, pkAlice := generateTestUser()
+	_, pkBob := generateTestUser()
+
+	// Whitelist
+	ctx := context.Background()
+	vr.InternalChangePubKey(ctx, pkAlice.Hex(), store.PubKeyAllowed, "")
+	vr.InternalChangePubKey(ctx, pkBob.Hex(), store.PubKeyAllowed, "")
+
+	// Connect/Auth
+	relayAlice, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	defer relayAlice.Close()
+
+	relayBob, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	defer relayBob.Close()
+
+	// --- NIP-17 Mechanism ---
+	// 1. Kind 1059 (Gift Wrap) is the outer shell.
+	// 2. It contains an encrypted seal in `.Content`.
+	// 3. It MUST have a "p" tag pointing to the receiver.
+	// Note: NIP-17 suggests blinding the metadata, but from the Relay's perspective,
+	// it just sees a Kind 1059 with a valid "p" tag to index.
+
+	giftWrap := nostr.Event{
+		PubKey:    pkAlice,                        // In reality, this is a random ephemeral key, but Relay doesn't care
+		CreatedAt: nostr.Now(),                    // Can be tweaked (timestamp blinding), Relay doesn't care
+		Kind:      1059,                           // Gift Wrap
+		Tags:      nostr.Tags{{"p", pkBob.Hex()}}, // The recipient
+		Content:   "encrypted-nip44-blob",
+	}
+	giftWrap.Sign(skAlice)
+
+	// 1. Alice sends the Gift Wrap
+	err := relayAlice.Publish(ctx, giftWrap)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relayAlice.Auth(ctx, sign(skAlice)); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relayAlice.Publish(ctx, giftWrap)
+		if err != nil {
+			t.Fatalf("Failed to publish NIP-17 Gift Wrap: %v", err)
+		}
+	}
+
+	// 2. Bob subscribes to Gift Wraps addressed to him
+	// NIP-17 clients subscribe to kind 1059 and #p = their pubkey
+	subBob, _ := relayBob.Subscribe(ctx, nostr.Filter{
+		Kinds: []nostr.Kind{1059},
+		Tags:  nostr.TagMap{"p": []string{pkBob.Hex()}},
+	}, nostr.SubscriptionOptions{})
+
+	select {
+	case e := <-subBob.Events:
+		if e.ID != giftWrap.ID {
+			t.Error("Bob received wrong Gift Wrap")
+		}
+		if e.Kind != 1059 {
+			t.Errorf("Expected Kind 1059, got %d", e.Kind)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("NIP-17 Failure: Bob did not receive the Gift Wrap addressed to him")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// NIP-20: Command Results (OK messages)
+// -----------------------------------------------------------------------------
+
+func TestNIP20_CommandResults(t *testing.T) {
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	sk, pk := generateTestUser()
+	vr.InternalChangePubKey(context.Background(), pk.Hex(), store.PubKeyAllowed, "")
+
+	// --- Case 1: Success Scenario (Implicitly tested by Publish) ---
+	ctx := context.Background()
+	relay, err := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+
+	evValid := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		Content:   "NIP-20 Valid Event",
+	}
+	evValid.Sign(sk)
+
+	// internal 'Publish' waits for the ["OK", id, true, ""] message
+	err = relay.Publish(ctx, evValid)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relay.Auth(ctx, sign(sk)); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relay.Publish(ctx, evValid)
+		if err != nil {
+			t.Fatalf("Failed to publish valid event: %v", err)
+		}
+	}
+	relay.Close()
+
+	// --- Case 2: Failure Scenario (Invalid Signature) ---
+	// We use a raw connection to intentionally send malformed data
+	// that the standard library might prevent us from sending.
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Websocket dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	// 1. Construct Invalid Event
+	// We sign it, then modify content WITHOUT resigning.
+	evBad := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		Content:   "Original Content",
+	}
+	evBad.Sign(sk)
+	evBad.Content = "Tampered Content" // Signature now invalid matching this ID/Content
+
+	// 2. Send via Raw Socket
+	err = conn.WriteJSON([]any{"EVENT", evBad})
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relay.Auth(ctx, sign(sk)); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relay.Publish(ctx, evValid)
+		if err != nil {
+			t.Fatalf("Failed to send bad event: %v", err)
+		}
+	}
+
+	// 3. Read Response
+	_, respMsg, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to read OK response: %v", err)
+	}
+
+	// 4. Verify NIP-20 Structure: ["OK", event_id, false, "reason"]
+	var okEnvelope []any
+	if err := json.Unmarshal(respMsg, &okEnvelope); err != nil {
+		t.Fatalf("Invalid JSON response: %v", err)
+	}
+
+	if len(okEnvelope) < 4 || okEnvelope[0] != "OK" {
+		t.Fatalf("Expected NIP-20 OK envelope, got: %s", string(respMsg))
+	}
+
+	// Check ID
+	if okEnvelope[1] != evBad.ID.Hex() {
+		t.Errorf("NIP-20: ID mismatch. Sent %s, got %s", evBad.ID, okEnvelope[1])
+	}
+
+	// Check Success Flag (Should be false)
+	success, ok := okEnvelope[2].(bool)
+	if !ok || success {
+		t.Error("NIP-20: Expected success=false for invalid signature, got true")
+	}
+
+	// Check Reason Prefix (NIP-20 requires prefixes like 'invalid:')
+	reason, _ := okEnvelope[3].(string)
+	if !strings.HasPrefix(reason, "invalid:") {
+		t.Errorf("NIP-20: Reason string should start with 'invalid:', got: %s", reason)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// NIP-25: Reactions (Likes)
+// -----------------------------------------------------------------------------
+
+func TestNIP25_Reactions(t *testing.T) {
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	// Alice posts, Bob reacts
+	skAlice, pkAlice := generateTestUser()
+	skBob, pkBob := generateTestUser()
+
+	// Whitelist both
+	ctx := context.Background()
+	vr.InternalChangePubKey(ctx, pkAlice.Hex(), store.PubKeyAllowed, "")
+	vr.InternalChangePubKey(ctx, pkBob.Hex(), store.PubKeyAllowed, "")
+
+	// Connect Alice
+	relayAlice, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	defer relayAlice.Close()
+
+	// Connect Bob
+	relayBob, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	defer relayBob.Close()
+
+	// 1. Alice publishes a Note (Kind 1)
+	note := nostr.Event{
+		PubKey:    pkAlice,
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		Content:   "Pleaassee like this post",
+	}
+	note.Sign(skAlice)
+
+	err := relayAlice.Publish(ctx, note)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relayAlice.Auth(ctx, sign(skAlice)); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relayAlice.Publish(ctx, note)
+		if err != nil {
+			t.Fatalf("Failed to publish root note: %v", err)
+		}
+	}
+
+	// 2. Bob publishes a Reaction (Kind 7)
+	// NIP-25: Content is "+" (like), tags include "e" (event id) and "p" (author)
+	reaction := nostr.Event{
+		PubKey:    pkBob,
+		CreatedAt: nostr.Now(),
+		Kind:      7,
+		Content:   "+",
+		Tags: nostr.Tags{
+			{"e", note.ID.Hex()},     // Reference to the note
+			{"p", note.PubKey.Hex()}, // Reference to Alice
+		},
+	}
+	reaction.Sign(skBob)
+
+	err = relayBob.Publish(ctx, reaction)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relayBob.Auth(ctx, sign(skBob)); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relayBob.Publish(ctx, reaction)
+		if err != nil {
+			t.Fatalf("Failed to publish reaction: %v", err)
+		}
+	}
+
+	// 3. Verify Retrieval
+	// We verify that we can fetch all reactions for Alice's note
+	sub, _ := relayAlice.Subscribe(ctx, nostr.Filter{
+		Kinds: []nostr.Kind{7},
+		Tags:  nostr.TagMap{"e": []string{note.ID.Hex()}},
+	}, nostr.SubscriptionOptions{})
+
+	select {
+	case e := <-sub.Events:
+		if e.Content != "+" {
+			t.Errorf("Expected reaction content '+', got '%s'", e.Content)
+		}
+		if e.PubKey != pkBob {
+			t.Errorf("Expected reaction from Bob, got %s", e.PubKey)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("NIP-25 Failure: Could not retrieve reaction for the event")
+	}
+
+	// 4. Verify Emoji Reaction (Optional edge case)
+	// NIP-25 allows emojis as content
+	emojiReaction := nostr.Event{
+		PubKey:    pkBob,
+		CreatedAt: nostr.Now() + 1,
+		Kind:      7,
+		Content:   "🤙",
+		Tags: nostr.Tags{
+			{"e", note.ID.Hex()},
+			{"p", note.PubKey.Hex()},
+		},
+	}
+	emojiReaction.Sign(skBob)
+	relayBob.Publish(ctx, emojiReaction)
+
+	// Quick check to ensure it was accepted
+	subEmoji, _ := relayAlice.Subscribe(ctx, nostr.Filter{IDs: []nostr.ID{emojiReaction.ID}}, nostr.SubscriptionOptions{})
+	select {
+	case <-subEmoji.Events:
+		// Success
+	case <-time.After(1 * time.Second):
+		t.Error("NIP-25: Failed to store emoji reaction")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// NIP-28: Public Chat
+// -----------------------------------------------------------------------------
+
+func TestNIP28_PublicChat(t *testing.T) {
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	// Admin creates the channel, User joins and chats
+	skAdmin, pkAdmin := generateTestUser()
+	skUser, pkUser := generateTestUser()
+
+	// Whitelist
+	ctx := context.Background()
+	vr.InternalChangePubKey(ctx, pkAdmin.Hex(), store.PubKeyAllowed, "")
+	vr.InternalChangePubKey(ctx, pkUser.Hex(), store.PubKeyAllowed, "")
+
+	// Connect
+	relay, err := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer relay.Close()
+
+	// --- 1. Create Channel (Kind 40) ---
+	channel := nostr.Event{
+		PubKey:    pkAdmin,
+		CreatedAt: nostr.Now(),
+		Kind:      40, // Channel Creation
+		Content:   `{"name": "General Chat", "about": "Talk about stuff"}`,
+		Tags:      nostr.Tags{},
+	}
+	channel.Sign(skAdmin)
+
+	err = relay.Publish(ctx, channel)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relay.Auth(ctx, sign(skAdmin)); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relay.Publish(ctx, channel)
+		if err != nil {
+			t.Fatalf("Failed to create NIP-28 channel: %v", err)
+		}
+	}
+
+	// --- 2. Update Metadata (Kind 41) ---
+	// Admin decides to change the picture or name
+	metaUpdate := nostr.Event{
+		PubKey:    pkAdmin,
+		CreatedAt: nostr.Now() + 10,
+		Kind:      41, // Channel Metadata
+		Content:   `{"name": "General Chat", "about": "Talk about Bitcoin", "picture": "https://example.com/logo.png"}`,
+		Tags: nostr.Tags{
+			{"e", channel.ID.Hex(), wsURL, "root"}, // Reference to original channel
+		},
+	}
+	metaUpdate.Sign(skAdmin)
+
+	err = relay.Publish(ctx, metaUpdate)
+	if err != nil {
+		t.Fatalf("Failed to update NIP-28 channel metadata: %v", err)
+	}
+
+	// --- 3. Send Message (Kind 42) ---
+	// Switch identity to regular User
+	// (In a real test we might open a new connection, but re-authing/signing works for basic logic)
+
+	msg := nostr.Event{
+		PubKey:    pkUser,
+		CreatedAt: nostr.Now() + 20,
+		Kind:      42, // Channel Message
+		Content:   "Hello world!",
+		Tags: nostr.Tags{
+			{"e", channel.ID.Hex(), wsURL, "root"}, // Must point to Channel ID
+		},
+	}
+	msg.Sign(skUser)
+
+	// We need to re-auth or just assume the relay allows the write if we didn't close connection.
+	// Since we whitelisted pkUser in the setup, this write should pass even if the session was originally Admin's,
+	// *unless* the relay binds the connection to the first Auth.
+	// To be safe, let's open a fresh connection for the user.
+	relayUser, _ := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	defer relayUser.Close()
+
+	err = relayUser.Publish(ctx, msg)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relayUser.Auth(ctx, sign(skUser)); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relayUser.Publish(ctx, msg)
+		if err != nil {
+			t.Fatalf("Failed to publish NIP-28 message: %v", err)
+		}
+	}
+
+	// --- 4. Retrieval ---
+	// Query for messages in this channel
+	sub, _ := relayUser.Subscribe(ctx, nostr.Filter{
+		Kinds: []nostr.Kind{42},
+		Tags:  nostr.TagMap{"e": []string{channel.ID.Hex()}},
+	}, nostr.SubscriptionOptions{})
+
+	select {
+	case e := <-sub.Events:
+		if e.Content != "Hello world!" {
+			t.Errorf("NIP-28: Message content mismatch, got %s", e.Content)
+		}
+		// Verify referencing
+		if tag := e.Tags.Find("e"); tag == nil || tag[1] != channel.ID.Hex() {
+			t.Error("NIP-28: Message missing correct channel reference")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("NIP-28: Failed to retrieve channel message")
+	}
+}
+
+// -----------------------------------------------------------------------------
 // NIP-40: Expiration Timestamp
 // -----------------------------------------------------------------------------
 
@@ -374,13 +1250,6 @@ func TestNIP42_Authentication(t *testing.T) {
 	}
 	defer relay.Close()
 
-	// Since policies.MustAuth is on, the relay should have sent an AUTH challenge immediately.
-	// We need to listen for it.
-
-	// Note: nostr.RelayConnect doesn't automatically handle Auth unless we set a Signer.
-	// Here we want to test the raw flow manually to ensure the relay sends the challenge.
-
-	// We will try to publish; it should fail with "auth-required"
 	ev := nostr.Event{
 		PubKey:    pk,
 		CreatedAt: nostr.Now(),
@@ -395,25 +1264,13 @@ func TestNIP42_Authentication(t *testing.T) {
 		t.Errorf("Expected publish to fail before auth: %v", err)
 	}
 
-	// Now let's perform the actual Auth
-	// We assert that the Challenge was stored in the relay object (go-nostr handles receiving it)
-	/*if relay.Challenge == "" {
-		t.Error("Relay did not send an AUTH challenge upon connection")
-	}*/
-
 	// Send Auth
 	err = relay.Auth(ctx, sign(sk))
 
-	// In a real integration test using nostr-sdk, .Auth() handles the sending.
-	// To be very specific, we can manually send:
-	// relay.Connection.WriteJSON([]interface{}{"AUTH", authEvent})
-
-	// However, let's assume we want to verify the relay accepts it.
-	// We can simply try to publish again. If Auth succeeded, publish *might* proceed
-	// (depending on payment policy, but it shouldn't fail on "auth-required").
-
-	// Check if we are considered authenticated
-	// Since we can't easily introspect the relay's memory, we rely on the absence of "auth-required" error.
+	err = relay.Publish(ctx, ev)
+	if err != nil {
+		t.Fatalf("Publish failed after auth: %v", err)
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -464,6 +1321,293 @@ func TestNIP45_Count(t *testing.T) {
 	// If Store is working, count should be 2. If mock store is nil/empty, might be 0.
 	// We just test that the command didn't error out (NIP-45 supported).
 	t.Logf("Count returned: %d", count)
+}
+
+// -----------------------------------------------------------------------------
+// NIP-51: Lists (Mute List, Pin List, Categorized Sets)
+// -----------------------------------------------------------------------------
+
+func TestNIP51_Lists(t *testing.T) {
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	sk, pk := generateTestUser()
+	vr.InternalChangePubKey(context.Background(), pk.Hex(), store.PubKeyAllowed, "")
+
+	ctx := context.Background()
+	relay, err := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer relay.Close()
+
+	// --- Part 1: Standard Replaceable List (Kind 10000 - Mute List) ---
+	// Mute lists are unique per user. A new one wipes the old one.
+
+	muteTarget1 := "0000000000000000000000000000000000000000000000000000000000000001"
+	muteTarget2 := "0000000000000000000000000000000000000000000000000000000000000002"
+
+	// Version 1: Mute Target 1
+	muteListV1 := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now() - 100,
+		Kind:      10000, // Mute List
+		Tags: nostr.Tags{
+			{"p", muteTarget1},
+		},
+	}
+	muteListV1.Sign(sk)
+	err = relay.Publish(ctx, muteListV1)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relay.Auth(ctx, sign(sk)); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relay.Publish(ctx, muteListV1)
+		if err != nil {
+			t.Fatalf("Publish failed: %v", err)
+		}
+	}
+
+	// Version 2: Mute Target 1 AND 2 (Newer timestamp)
+	muteListV2 := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      10000,
+		Tags: nostr.Tags{
+			{"p", muteTarget1},
+			{"p", muteTarget2},
+		},
+	}
+	muteListV2.Sign(sk)
+	relay.Publish(ctx, muteListV2)
+
+	// Verify Replacement (Kind 10000)
+	subMute, _ := relay.Subscribe(ctx, nostr.Filter{
+		Authors: []nostr.PubKey{pk},
+		Kinds:   []nostr.Kind{10000},
+	}, nostr.SubscriptionOptions{})
+
+	var muteEvents []nostr.Event
+	select {
+	case e := <-subMute.Events:
+		muteEvents = append(muteEvents, e)
+	case <-time.After(500 * time.Millisecond):
+		// Done gathering
+	}
+
+	if len(muteEvents) != 1 {
+		t.Errorf("NIP-51: Expected 1 Mute List, got %d. Old list was not replaced.", len(muteEvents))
+	} else if muteEvents[0].ID != muteListV2.ID {
+		t.Error("NIP-51: Returned Mute List is not the latest version.")
+	}
+
+	// --- Part 2: Parameterized Replaceable Sets (Kind 30000 - People Sets) ---
+	// These use the "d" tag to distinguish between different lists (e.g. "work" vs "gym").
+
+	// Set A: "Work Buddies"
+	workSet := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      30000, // Follow Sets
+		Tags: nostr.Tags{
+			{"d", "work"}, // Identifier
+			{"p", muteTarget1},
+		},
+	}
+	workSet.Sign(sk)
+	relay.Publish(ctx, workSet)
+
+	// Set B: "Gym Buddies" (Version 1)
+	gymSetV1 := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now() - 50,
+		Kind:      30000,
+		Tags: nostr.Tags{
+			{"d", "gym"},
+			{"p", muteTarget2},
+		},
+	}
+	gymSetV1.Sign(sk)
+	relay.Publish(ctx, gymSetV1)
+
+	// Set B: "Gym Buddies" (Version 2 - Updated)
+	gymSetV2 := nostr.Event{
+		PubKey:    pk,
+		CreatedAt: nostr.Now(),
+		Kind:      30000,
+		Tags: nostr.Tags{
+			{"d", "gym"},
+			{"p", muteTarget2},
+			{"p", muteTarget1}, // Added a person
+		},
+	}
+	gymSetV2.Sign(sk)
+	relay.Publish(ctx, gymSetV2)
+
+	// Verify Parameterized Replacement
+	// We expect to find:
+	// 1. "work" set (Original)
+	// 2. "gym" set (Version 2 ONLY)
+	subSets, _ := relay.Subscribe(ctx, nostr.Filter{
+		Authors: []nostr.PubKey{pk},
+		Kinds:   []nostr.Kind{30000},
+	}, nostr.SubscriptionOptions{})
+
+	foundWork := false
+	foundGymV1 := false
+	foundGymV2 := false
+
+	// Collect with timeout
+	timeout := time.After(1 * time.Second)
+Loop:
+	for {
+		select {
+		case e := <-subSets.Events:
+			dTag := e.Tags.Find("d")[1]
+			switch dTag {
+			case "work":
+				foundWork = true
+			case "gym":
+				switch e.ID {
+				case gymSetV1.ID:
+					foundGymV1 = true
+				case gymSetV2.ID:
+					foundGymV2 = true
+				}
+			}
+		case <-subSets.EndOfStoredEvents:
+			break Loop
+		case <-timeout:
+			break Loop
+		}
+	}
+
+	if !foundWork {
+		t.Error("NIP-51: Failed to retrieve 'work' set (unaffected by other updates).")
+	}
+	if foundGymV1 {
+		t.Error("NIP-51: Retrieved 'gym' set V1. It should have been replaced by V2.")
+	}
+	if !foundGymV2 {
+		t.Error("NIP-51: Failed to retrieve 'gym' set V2.")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// NIP-56: Reporting
+// -----------------------------------------------------------------------------
+
+func TestNIP56_Reporting(t *testing.T) {
+	_, vr, wsURL, teardown := setupTestRelay(t)
+	defer teardown()
+
+	// 1. Setup Users
+	skReporter, pkReporter := generateTestUser()
+	_, pkSpammer := generateTestUser() // The bad actor
+
+	// Whitelist Reporter
+	ctx := context.Background()
+	vr.InternalChangePubKey(ctx, pkReporter.Hex(), store.PubKeyAllowed, "")
+
+	// Connect
+	relay, err := nostr.RelayConnect(ctx, wsURL, nostr.RelayOptions{})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer relay.Close()
+
+	// --- Scenario 1: Reporting a User (Account-level report) ---
+	// Reporter flags Spammer for "spam"
+	userReport := nostr.Event{
+		PubKey:    pkReporter,
+		CreatedAt: nostr.Now(),
+		Kind:      1984, // Reporting
+		Content:   "This user is a bot",
+		Tags: nostr.Tags{
+			// ["p", pubkey, "report-type"]
+			{"p", pkSpammer.Hex(), "spam"},
+		},
+	}
+	userReport.Sign(skReporter)
+
+	err = relay.Publish(ctx, userReport)
+	if err != nil {
+		if strings.Contains(err.Error(), "auth-required") {
+			if authErr := relay.Auth(ctx, sign(skReporter)); authErr != nil {
+				t.Fatalf("Auth failed: %v", authErr)
+			}
+		}
+		err = relay.Publish(ctx, userReport)
+		if err != nil {
+			t.Fatalf("Failed to publish User Report: %v", err)
+		}
+	}
+
+	// Verify retrieval by reported user
+	subUser, _ := relay.Subscribe(ctx, nostr.Filter{
+		Kinds: []nostr.Kind{1984},
+		Tags:  nostr.TagMap{"p": []string{pkSpammer.Hex()}},
+	}, nostr.SubscriptionOptions{})
+
+	select {
+	case e := <-subUser.Events:
+		if e.ID != userReport.ID {
+			t.Error("NIP-56: Retrieved wrong report event for user")
+		}
+		if e.Tags.Find("p")[1] != pkSpammer.Hex() {
+			t.Error("NIP-56: Report missing targeted p-tag")
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("NIP-56: Failed to retrieve user report")
+	}
+
+	// --- Scenario 2: Reporting specific Content (Event-level report) ---
+	// Let's pretend there is a bad event ID
+	badEventID := nostr.Generate().Hex() // Just using random hex as ID
+
+	contentReport := nostr.Event{
+		PubKey:    pkReporter,
+		CreatedAt: nostr.Now() + 10,
+		Kind:      1984,
+		Content:   "Illegal content",
+		Tags: nostr.Tags{
+			// ["e", event_id, "report-type"]
+			// ["p", pubkey] (Optional, usually included if known)
+			{"e", badEventID, "illegal"},
+			{"p", pkSpammer.Hex()},
+		},
+	}
+	contentReport.Sign(skReporter)
+
+	err = relay.Publish(ctx, contentReport)
+	if err != nil {
+		t.Fatalf("Failed to publish Content Report: %v", err)
+	}
+
+	// Verify retrieval by reported event ID
+	subContent, _ := relay.Subscribe(ctx, nostr.Filter{
+		Kinds: []nostr.Kind{1984},
+		Tags:  nostr.TagMap{"e": []string{badEventID}},
+	}, nostr.SubscriptionOptions{})
+
+	select {
+	case e := <-subContent.Events:
+		if e.ID != contentReport.ID {
+			t.Error("NIP-56: Retrieved wrong report event for content")
+		}
+		// Check report type
+		tag := e.Tags.Find("e")
+		if len(tag) < 2 || tag[1] != badEventID {
+			t.Error("NIP-56: Malformed e-tag in report")
+		}
+		if len(tag) >= 3 && tag[2] != "illegal" {
+			t.Errorf("NIP-56: Expected report type 'illegal', got '%s'", tag[2])
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("NIP-56: Failed to retrieve content report")
+	}
 }
 
 // -----------------------------------------------------------------------------
