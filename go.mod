@@ -4,6 +4,7 @@ go 1.25.4
 
 require (
 	fiatjaf.com/nostr v0.0.0-20260113104945-455d7fcefee4
+	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/fiatjaf/eventstore v0.17.5
 	github.com/joho/godotenv v1.5.1
 	github.com/kelseyhightower/envconfig v1.4.0
@@ -20,7 +21,6 @@ require (
 	github.com/bits-and-blooms/bitset v1.24.3 // indirect
 	github.com/blendle/zapdriver v1.3.1 // indirect
 	github.com/btcsuite/btcd v0.24.2 // indirect
-	github.com/btcsuite/btcd/btcutil v1.1.5 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/consensys/gnark-crypto v0.19.2 // indirect
 	github.com/crate-crypto/go-eth-kzg v1.4.0 // indirect
@@ -82,7 +82,7 @@ require (
 	github.com/bytedance/sonic/loader v0.4.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/coder/websocket v1.8.14 // indirect
-	github.com/coinbase/x402/go v0.0.0-20260106005110-786bd53e114f
+	github.com/coinbase/x402/go v0.0.0-20260117015812-7012119b123f
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/fasthttp/websocket v1.5.12

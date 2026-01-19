@@ -45,20 +45,16 @@ func (vr *VengefulRelay) paymentPolicy(ctx context.Context, evt nostr.Event) (bo
 		return false, ""
 	}
 
-	if (evt.Kind == 4 || evt.Kind == 1059) && evt.Tags.ContainsAny("p", nil) {
-		return false, ""
-	}
-
 	// 2. Check Database for Allowed or Banned
 	_, pubkeyState, reason, err := vr.Store.QueryPubkeyState(evt.PubKey.Hex())
 	if err != nil {
-		return true, err.Error()
+		return true, fmt.Sprintf("restricted: %v", err)
 	}
 	if pubkeyState == store.PubKeyAllowed {
 		return false, ""
 	}
 	if pubkeyState == store.PubKeyBanned {
-		return true, reason
+		return true, fmt.Sprintf("restricted: %s", reason)
 	}
 
 	// 3. Check Database for Payment
@@ -67,6 +63,10 @@ func (vr *VengefulRelay) paymentPolicy(ctx context.Context, evt nostr.Event) (bo
 	}
 
 	if vr.Config.FreeRelay {
+		return false, ""
+	}
+
+	if (evt.Kind == 4 || evt.Kind == 1059) && evt.Tags.ContainsAny("p", nil) {
 		return false, ""
 	}
 
@@ -140,13 +140,10 @@ func (vr *VengefulRelay) nip62Policy(ctx context.Context, evt nostr.Event) (bool
 	}
 
 	// 2. Compare against our Config.RelayURL
-	// We normalize (remove trailing slash, ignore scheme if needed) for better matching
 	myURL := normalizeURL(vr.Config.RelayURL)
 	targetURL := normalizeURL(targetRelay)
 
 	if myURL != targetURL {
-		// NIP-62 says: "Relays... SHOULD NOT operate on requests not targeting them."
-		// We reject it so we don't store a vanish request meant for someone else.
 		return true, "blocked: vanish request not targeting this relay"
 	}
 

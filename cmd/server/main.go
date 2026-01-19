@@ -33,7 +33,7 @@ func main() {
 	}
 	logger := slog.Default().With("component", "relay")
 
-	lnProvider := lightning.NewProvider(cfg.LNBitsURL, cfg.LNBitsKey)
+	lnProvider := lightning.NewProvider("", cfg.OpenNodeApiKey)
 
 	khatruRelay := relay.New(cfg, db, lnProvider, logger)
 
@@ -51,6 +51,7 @@ func main() {
 	mux.HandleFunc("/invoice", webHandler.HandleInvoice)
 	mux.HandleFunc("/check", webHandler.HandleCheck)
 	mux.HandleFunc("/opennode/callback", webHandler.HandleOpenNodeCallback)
+	mux.HandleFunc("/opennode/zaps", webHandler.HandleZaps)
 
 	if cfg.CDPClientKey != "" {
 		x402Middleware := payments.SetupMiddleware(cfg, db)

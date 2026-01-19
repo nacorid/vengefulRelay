@@ -1,14 +1,18 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/config"
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/lightning"
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/store"
+	"git.vengeful.eu/nacorid/vengefulRelay/internal/utils"
 )
 
 type Server struct {
@@ -18,9 +22,32 @@ type Server struct {
 	Logger     *slog.Logger
 }
 
+type payload struct {
+	ID           string `json:"id"`
+	CallbackURL  string `json:"callback_url"`
+	SuccessURL   string `json:"success_url"`
+	Status       string `json:"status"`
+	OrderID      string `json:"order_id"`
+	Description  string `json:"description"`
+	Price        string `json:"price"`
+	Fee          string `json:"fee"`
+	AutoSettle   string `json:"auto_settle,omitempty"`
+	HashedOrder  string `json:"hashed_order"`
+	Transactions []struct {
+		Address   string `json:"address"`
+		CreatedAt string `json:"created_at"`
+		SettledAt string `json:"settled_at"`
+		TX        string `json:"tx"`
+		Status    string `json:"status"`
+		Amount    string `json:"amount"`
+	} `json:"transactions,omitempty"`
+	MissingAmount string `json:"missing_amt,omitempty"`
+	OverpaidBy    string `json:"overpaid_by,omitempty"`
+}
+
 func (s *Server) HandleWebpage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(fmt.Sprintf(`
+	fmt.Fprintf(w, `
 <meta charset=utf-8>
 <title>%s</title>
 <h1>%s</h1>
@@ -58,7 +85,7 @@ document.querySelector('form').addEventListener('submit', async ev => {
 })
 </script>
 <style>body { margin: 10px auto; width: 800px; max-width: 90%%; font-family: sans-serif; }</style>
-    `, s.Config.RelayName, s.Config.RelayName, s.Config.RelayDescription, s.Config.AdmissionFee)))
+    `, s.Config.RelayName, s.Config.RelayName, s.Config.RelayDescription, s.Config.AdmissionFee)
 }
 
 func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -66,8 +93,41 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
 
+func (s *Server) HandleZaps(w http.ResponseWriter, r *http.Request) {
+	bodyBytes, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	if err := r.ParseForm(); err != nil {
+		s.Logger.Error("failed to parse form", "error", err)
+		return
+	}
+
+	var payload payload
+	payload.ID = r.FormValue("id")
+	payload.Status = r.FormValue("status")
+	payload.OrderID = r.FormValue("order_id")
+	payload.Description = r.FormValue("description")
+	payload.Price = r.FormValue("price")
+	payload.Fee = r.FormValue("fee")
+	payload.HashedOrder = r.FormValue("hashed_order")
+
+	s.Logger.Info("received zap payload", "id", payload.ID, "status", payload.Status, "order_id", payload.OrderID,
+		"description", payload.Description, "price", payload.Price, "fee", payload.Fee, "hashed_order", payload.HashedOrder)
+
+	w.Write([]byte("OK"))
+}
+
 func (s *Server) HandleInvoice(w http.ResponseWriter, r *http.Request) {
 	pubkey := r.URL.Query().Get("pubkey")
+	pubkey = strings.Trim(pubkey, " ")
+	var err error
+	if strings.HasPrefix(pubkey, "npub") {
+		pubkey, err = utils.DecodeNpub(pubkey)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "%s"}`, err.Error()), 400)
+			return
+		}
+	}
 	if pubkey == "" {
 		http.Error(w, `{"error": "pubkey required"}`, 400)
 		return
@@ -92,11 +152,8 @@ func (s *Server) HandleInvoice(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) HandleCheck(w http.ResponseWriter, r *http.Request) {
 	hash := r.URL.Query().Get("hash")
-	pubkey := r.URL.Query().Get("pubkey")
 
 	if s.LNProvider.CheckPayment(hash) {
-		// Register in DB
-		s.Store.RegisterPayment(pubkey, hash, "BTC", "unknown", "lightning", "unknown")
 		json.NewEncoder(w).Encode(map[string]bool{"paid": true})
 	} else {
 		json.NewEncoder(w).Encode(map[string]bool{"paid": false})
@@ -104,47 +161,42 @@ func (s *Server) HandleCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) HandleOpenNodeCallback(w http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		ID           string `json:"id"`
-		CallbackURL  string `json:"callback_url"`
-		SuccessURL   string `json:"success_url"`
-		Status       string `json:"status"`
-		OrderID      string `json:"order_id"`
-		Description  string `json:"description"`
-		Price        string `json:"price"`
-		Fee          string `json:"fee"`
-		AutoSettle   string `json:"auto_settle"`
-		HashedOrder  string `json:"hashed_order"`
-		Transactions []struct {
-			Address   string `json:"address"`
-			CreatedAt string `json:"created_at"`
-			SettledAt string `json:"settled_at"`
-			TX        string `json:"tx"`
-			Status    string `json:"status"`
-			Amount    string `json:"amount"`
-		} `json:"transactions,omitempty"`
-		MissingAmount string `json:"missing_amt,omitempty"`
-		OverpaidBy    string `json:"overpaid_by,omitempty"`
+	bodyBytes, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	if err := r.ParseForm(); err != nil {
+		s.Logger.Error("failed to parse form", "error", err)
+		return
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		s.Logger.Error("failed to decode opennode callback", "error", err)
-		w.Write([]byte("OK"))
-	}
+
+	var payload payload
+	payload.ID = r.FormValue("id")
+	payload.Status = r.FormValue("status")
+	payload.OrderID = r.FormValue("order_id")
+	payload.Description = r.FormValue("description")
+	payload.Price = r.FormValue("price")
+	payload.Fee = r.FormValue("fee")
+	payload.HashedOrder = r.FormValue("hashed_order")
+
 	if payload.Status == "paid" {
 		var pubkey string
-		fmt.Sscanf(payload.OrderID, "Admission for %s", &pubkey)
-		var txId string
-		if len(payload.Transactions) > 0 {
-			txId = payload.Transactions[0].TX
-		} else {
-			txId = payload.ID
-		}
-		s.Store.RegisterPayment(pubkey, txId, "BTC", "unknown", "lightning", "opennode")
+		fmt.Sscanf(payload.Description, "Admission for %s", &pubkey)
+		s.Logger.Info("payment received", "payload", payload)
+		s.Store.RegisterPayment(pubkey, payload.HashedOrder, "BTC", payload.Price, "lightning", "opennode", payload.Fee)
 	}
 }
 
 func (s *Server) HandleAdmission(w http.ResponseWriter, r *http.Request) {
 	pubkey := r.URL.Query().Get("pubkey")
+	pubkey = strings.Trim(pubkey, " ")
+	var err error
+	if strings.HasPrefix(pubkey, "npub") {
+		pubkey, err = utils.DecodeNpub(pubkey)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "%s"}`, err.Error()), 400)
+			return
+		}
+	}
 	if s.Store.IsPubkeyRegistered(pubkey) {
 		w.WriteHeader(400)
 		w.Write([]byte("already paid"))

@@ -70,11 +70,11 @@ func SetupMiddleware(cfg config.Config, st *store.Storage) func(http.Handler) ht
 			{Network: svmNetwork, Server: svm.NewExactSvmScheme()},
 		},
 		PaywallConfig: &x402http.PaywallConfig{
-			CDPClientKey: cfg.CDPClientKey,
-			AppName:      cfg.RelayName,
-			AppLogo:      cfg.RelayIcon,
-			CurrentURL:   cfg.RelayURL + "/admission",
-			Testnet:      false,
+			//CDPClientKey: cfg.CDPClientKey,
+			AppName:    cfg.RelayName,
+			AppLogo:    cfg.RelayIcon,
+			CurrentURL: cfg.RelayURL + "/admission",
+			Testnet:    false,
 		},
 		SettlementHandler: func(w http.ResponseWriter, r *http.Request, s *x402.SettleResponse) {
 			handleSettlement(w, r, s, st)
@@ -93,5 +93,5 @@ func handleSettlement(w http.ResponseWriter, r *http.Request, s *x402.SettleResp
 	bytes, _ := base64.StdEncoding.DecodeString(signature)
 	var payload struct{ Accepted x402.PaymentRequirements }
 	_ = json.Unmarshal(bytes, &payload)
-	st.RegisterPayment(pubkey, s.Transaction, payload.Accepted.Asset, payload.Accepted.Amount, string(s.Network), s.Payer)
+	st.RegisterPayment(pubkey, s.Transaction, payload.Accepted.Asset, payload.Accepted.Amount, string(s.Network), s.Payer, "0")
 }

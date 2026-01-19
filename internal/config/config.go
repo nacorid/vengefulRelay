@@ -21,9 +21,7 @@ type Config struct {
 	Whitelist        []string `envconfig:"WHITELIST"`
 	FreeRelay        bool     `default:"false" envconfig:"FREE_RELAY"`
 
-	// Lightning (LNBits/Alby compatible)
-	LNBitsURL      string `envconfig:"LNBITS_URL"` // e.g. https://legend.lnbits.com
-	LNBitsKey      string `envconfig:"LNBITS_KEY"` // Invoice/Read key
+	// Lightning
 	OpenNodeApiKey string `envconfig:"OPENNODE_API_KEY"`
 	AdmissionFee   int64  `default:"100" envconfig:"ADMISSION_FEE"`
 

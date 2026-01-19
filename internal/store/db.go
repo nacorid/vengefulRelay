@@ -47,6 +47,7 @@ func Init(databaseURL string) (*Storage, error) {
 			amount text NOT NULL,
 			network text NOT NULL,
 			payer text NOT NULL,
+			fee text NOT NULL,
 			paid_at timestamp NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (pubkey, transaction_id)
 		);
@@ -264,10 +265,10 @@ func (s *Storage) QueryAllPubkeyStates(state PubKeyState) ([]nostr.PubKey, []str
 	return pubkeys, reasons, nil
 }
 
-func (s *Storage) RegisterPayment(pubkey, txId, asset, amount, network, payer string) error {
+func (s *Storage) RegisterPayment(pubkey, txId, asset, amount, network, payer, fee string) error {
 	_, err := s.DB.Exec(
-		"INSERT INTO invoices_paid (pubkey, transaction_id, asset, amount, network, payer) VALUES ($1, $2, $3, $4, $5, $6)",
-		pubkey, txId, asset, amount, network, payer,
+		"INSERT INTO invoices_paid (pubkey, transaction_id, asset, amount, network, payer, fee) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+		pubkey, txId, asset, amount, network, payer, fee,
 	)
 	return err
 }
@@ -304,21 +305,21 @@ func (s *Storage) VanishPubKey(ctx context.Context, pubkey string) error {
 		pubkey,
 	)
 	if err != nil {
-		ret = fmt.Errorf("Failed to vanish pubkey %s from known_pubkeys: %w", err)
+		ret = fmt.Errorf("Failed to vanish pubkey %s from known_pubkeys: %w", pubkey, err)
 	}
 	_, err = s.DB.ExecContext(ctx,
 		`DELETE FROM invoices_paid WHERE pubkey = $1`,
 		pubkey,
 	)
 	if err != nil {
-		ret = fmt.Errorf("%w\nFailed to vanish pubkey %s from invoices_paid: %w", ret, err)
+		ret = fmt.Errorf("%w\nFailed to vanish pubkey %s from invoices_paid: %w", ret, pubkey, err)
 	}
 	_, err = s.DB.ExecContext(ctx,
 		`DELETE FROM event WHERE pubkey = $1`,
 		pubkey,
 	)
 	if err != nil {
-		ret = fmt.Errorf("%w\nFailed to vanish pubkey %s from events: %w", ret, err)
+		ret = fmt.Errorf("%w\nFailed to vanish pubkey %s from events: %w", ret, pubkey, err)
 	}
 	return ret
 }
