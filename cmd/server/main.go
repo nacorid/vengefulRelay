@@ -27,7 +27,9 @@ func main() {
 		log.Fatalf("db init error: %v", err)
 	}
 
-	err = logn.Init(logn.Config{LogFilePath: "output.log", ConsoleLevel: logn.LevelInfo, FileLevel: logn.LevelTrace})
+	consoleLvl, err := logn.ParseLevel(cfg.ConsoleLogLvl)
+	fileLvl, err := logn.ParseLevel(cfg.FileLogLvl)
+	err = logn.Init(logn.Config{LogFilePath: cfg.LogFilePath, ConsoleLevel: consoleLvl, FileLevel: fileLvl})
 	if err != nil {
 		log.Printf("logger init error: %v", err)
 	}

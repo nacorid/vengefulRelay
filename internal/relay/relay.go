@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"log/slog"
 
 	"git.vengeful.eu/nacorid/vengefulRelay/internal/config"
@@ -50,31 +51,62 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *s
 		PaymentRequired:  true,
 		RestrictedWrites: true,
 	}
-	r.Info.Fees = &nip11.RelayFeesDocument{
-		Admission: []struct {
-			Amount int    `json:"amount"`
-			Unit   string `json:"unit"`
-		}{
-			{
-				Amount: int(cfg.AdmissionFee),
-				Unit:   "sats",
+	if cfg.Debug {
+		r.Info.Fees = &nip11.RelayFeesDocument{
+			Admission: []struct {
+				Amount int    `json:"amount"`
+				Unit   string `json:"unit"`
+			}{
+				{
+					Amount: int(1),
+					Unit:   "USDC",
+				},
 			},
-		},
+		}
+
+	} else {
+		r.Info.Fees = &nip11.RelayFeesDocument{
+			Admission: []struct {
+				Amount int    `json:"amount"`
+				Unit   string `json:"unit"`
+			}{
+				{
+					Amount: int(cfg.AdmissionFee),
+					Unit:   "sats",
+				},
+			},
+		}
 	}
 	r.Info.PaymentsURL = cfg.RelayURL
 	r.Info.Software = "git.vengeful.eu/nacorid/vengefulRelay"
 	r.Info.Version = "0.1.0"
 
-	r.OnRequest = policies.SeqRequest(policies.AntiSyncBots, policies.NoEmptyFilters)
-	r.OnEvent = policies.SeqEvent(
-		vr.authPolicy,
-		vr.nip62Policy,
-		vr.signaturePolicy,
-		vr.paymentPolicy,
-		vr.eventLengthPolicy,
-		vr.proofOfWorkPolicy,
-		vr.timestampPolicy,
-	)
+	if cfg.Debug {
+		r.OnRequest = policies.SeqRequest(vr.debugFilterPolicy, policies.AntiSyncBots, policies.NoEmptyFilters)
+		r.OnEvent = policies.SeqEvent(
+			vr.debugEventPolicy,
+			vr.authPolicy,
+			vr.nip62Policy,
+			vr.signaturePolicy,
+			vr.paymentPolicy,
+			vr.eventLengthPolicy,
+			vr.proofOfWorkPolicy,
+			vr.timestampPolicy,
+		)
+		r.OnConnect = func(ctx context.Context) { logger.Log(context.Background(), slog.Level(-8), "new client connected") }
+	} else {
+		r.OnRequest = policies.SeqRequest(policies.AntiSyncBots, policies.NoEmptyFilters)
+		r.OnEvent = policies.SeqEvent(
+			vr.authPolicy,
+			vr.nip62Policy,
+			vr.signaturePolicy,
+			vr.paymentPolicy,
+			vr.eventLengthPolicy,
+			vr.proofOfWorkPolicy,
+			vr.timestampPolicy,
+		)
+	}
+
 	//r.OnConnect = func(ctx context.Context) { khatru.RequestAuth(ctx) }
 
 	r.Log = slog.NewLogLogger(logger.Handler(), slog.LevelDebug)

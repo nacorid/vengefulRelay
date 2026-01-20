@@ -20,6 +20,10 @@ type Config struct {
 	MaxEventLength   int      `default:"100000" envconfig:"MAX_EVENT_LENGTH"`
 	Whitelist        []string `envconfig:"WHITELIST"`
 	FreeRelay        bool     `default:"false" envconfig:"FREE_RELAY"`
+	Debug            bool     `default:"false" envconfig:"DEBUG"`
+	LogFilePath      string   `default:"output.log" envconfig:"LOG_FILE_PATH"`
+	ConsoleLogLvl    string   `default:"info" envconfig:"CONSOLE_LOG_LEVEL"`
+	FileLogLvl       string   `default:"trace" envconfig:"FILE_LOG_LEVEL"`
 
 	// Lightning
 	OpenNodeApiKey string `envconfig:"OPENNODE_API_KEY"`

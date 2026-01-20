@@ -21,9 +21,28 @@ func (vr *VengefulRelay) authPolicy(ctx context.Context, evt nostr.Event) (bool,
 		return true, "auth-required: please authenticate"
 	}
 	if pubkey != evt.PubKey && evt.Tags.ContainsAny("-", nil) {
-		return true, ""
+		vr.logger.Debug("auth failed: protected event for other user", "event_pubkey", evt.PubKey, "authed_as", pubkey, "Kind", evt.Kind, "content", evt.Content, "tags", evt.Tags)
+		return true, "restricted: cannot post protected events for other users"
 	}
+	vr.logger.Debug("auth success", "event_pubkey", evt.PubKey, "authed_as", pubkey, "Kind", evt.Kind, "content", evt.Content, "tags", evt.Tags)
+	return false, ""
+}
 
+func (vr *VengefulRelay) debugEventPolicy(ctx context.Context, evt nostr.Event) (bool, string) {
+	pubkey, ok := khatru.GetAuthed(ctx)
+	if !ok {
+		return false, ""
+	}
+	vr.logger.Debug("event received", "pubkey", pubkey, "event", evt)
+	return false, ""
+}
+
+func (vr *VengefulRelay) debugFilterPolicy(ctx context.Context, flt nostr.Filter) (bool, string) {
+	pubkey, ok := khatru.GetAuthed(ctx)
+	if !ok {
+		return false, ""
+	}
+	vr.logger.Debug("request received", "pubkey", pubkey, "filter", flt)
 	return false, ""
 }
 
@@ -32,6 +51,7 @@ func (vr *VengefulRelay) signaturePolicy(ctx context.Context, evt nostr.Event) (
 	if ok {
 		return false, ""
 	}
+	vr.logger.Debug("invalid signature", "event_id", evt.ID, "event_pubkey", evt.PubKey)
 	return true, "blocked: invalid signature"
 }
 
