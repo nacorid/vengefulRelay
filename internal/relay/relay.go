@@ -47,7 +47,7 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *s
 	r.Info.Limitation = &nip11.RelayLimitationDocument{
 		MaxMessageLength: cfg.MaxEventLength,
 		MinPowDifficulty: cfg.MinPowDifficulty,
-		//AuthRequired:     true,
+		AuthRequired:     true,
 		PaymentRequired:  true,
 		RestrictedWrites: true,
 	}
@@ -107,7 +107,7 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *s
 		)
 	}
 
-	//r.OnConnect = func(ctx context.Context) { khatru.RequestAuth(ctx) }
+	r.OnConnect = func(ctx context.Context) { khatru.RequestAuth(ctx) }
 
 	r.Log = slog.NewLogLogger(logger.Handler(), slog.LevelDebug)
 
@@ -144,7 +144,7 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *s
 		56,
 		62,
 		70,
-		77,
+		//77,
 		86,
 	}
 

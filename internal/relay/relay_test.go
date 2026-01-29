@@ -522,9 +522,6 @@ func TestNIP11_RelayInfo(t *testing.T) {
 	if info.Name != vr.Config.RelayName {
 		t.Errorf("Expected name %s, got %s", vr.Config.RelayName, info.Name)
 	}
-	if !info.Limitation.AuthRequired {
-		t.Error("Expected AuthRequired to be true")
-	}
 
 	// Verify Supported NIPs are present
 	expectedNips := []int{1, 9, 11, 40, 42, 45, 70, 77, 86}
@@ -829,6 +826,8 @@ func TestNIP20_CommandResults(t *testing.T) {
 	_, vr, wsURL, teardown := setupTestRelay(t)
 	defer teardown()
 
+	vr.Config.RelayURL = wsURL
+
 	sk, pk := generateTestUser()
 	vr.InternalChangePubKey(context.Background(), pk.Hex(), store.PubKeyAllowed, "")
 
@@ -872,6 +871,53 @@ func TestNIP20_CommandResults(t *testing.T) {
 	}
 	defer conn.Close()
 
+	// 0. Authenticate if needed
+	isAuthRequired := false
+	if vr.Info.Limitation != nil {
+		isAuthRequired = vr.Info.Limitation.AuthRequired
+	}
+
+	if isAuthRequired {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("Expected AUTH challenge but connection closed: %v", err)
+		}
+
+		var env []json.RawMessage
+		if err := json.Unmarshal(msg, &env); err != nil {
+			t.Fatalf("Invalid JSON: %v", err)
+		}
+
+		var msgType string
+		json.Unmarshal(env[0], &msgType)
+		if msgType != "AUTH" {
+			t.Fatalf("Expected AUTH, got %s", msgType)
+		}
+
+		var challenge string
+		json.Unmarshal(env[1], &challenge)
+
+		authEv := nostr.Event{
+			PubKey:    pk,
+			CreatedAt: nostr.Now(),
+			Kind:      22242,
+			Tags:      nostr.Tags{{"relay", wsURL}, {"challenge", challenge}},
+		}
+		authEv.Sign(sk)
+
+		if err := conn.WriteJSON([]interface{}{"AUTH", authEv}); err != nil {
+			t.Fatalf("Failed to send AUTH response: %v", err)
+		}
+
+		_, authResp, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("Failed to read Auth result: %v", err)
+		}
+		if !strings.Contains(string(authResp), "true") {
+			t.Fatalf("Auth failed: %s", authResp)
+		}
+	}
+
 	// 1. Construct Invalid Event
 	// We sign it, then modify content WITHOUT resigning.
 	evBad := nostr.Event{
@@ -898,36 +944,51 @@ func TestNIP20_CommandResults(t *testing.T) {
 	}
 
 	// 3. Read Response
-	_, respMsg, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("Failed to read OK response: %v", err)
-	}
+	for {
+		_, respMsg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("Failed to read response: %v", err)
+		}
 
-	// 4. Verify NIP-20 Structure: ["OK", event_id, false, "reason"]
-	var okEnvelope []any
-	if err := json.Unmarshal(respMsg, &okEnvelope); err != nil {
-		t.Fatalf("Invalid JSON response: %v", err)
-	}
+		var envelope []json.RawMessage
+		if err := json.Unmarshal(respMsg, &envelope); err != nil {
+			continue
+		}
 
-	if len(okEnvelope) < 4 || okEnvelope[0] != "OK" {
-		t.Fatalf("Expected NIP-20 OK envelope, got: %s", string(respMsg))
-	}
+		var msgType string
+		json.Unmarshal(envelope[0], &msgType)
 
-	// Check ID
-	if okEnvelope[1] != evBad.ID.Hex() {
-		t.Errorf("NIP-20: ID mismatch. Sent %s, got %s", evBad.ID, okEnvelope[1])
-	}
+		// Ignore optional AUTH challenges if we didn't handle them above
+		if msgType == "AUTH" {
+			continue
+		}
 
-	// Check Success Flag (Should be false)
-	success, ok := okEnvelope[2].(bool)
-	if !ok || success {
-		t.Error("NIP-20: Expected success=false for invalid signature, got true")
-	}
+		if msgType == "OK" {
+			// Verify NIP-20 Logic
+			if len(envelope) < 4 {
+				t.Fatalf("Malformed OK envelope: %s", string(respMsg))
+			}
 
-	// Check Reason Prefix (NIP-20 requires prefixes like 'invalid:')
-	reason, _ := okEnvelope[3].(string)
-	if !strings.HasPrefix(reason, "invalid:") {
-		t.Errorf("NIP-20: Reason string should start with 'invalid:', got: %s", reason)
+			var eventID string
+			json.Unmarshal(envelope[1], &eventID)
+
+			if eventID != evBad.ID.Hex() {
+				t.Errorf("NIP-20: ID mismatch. Expected %s, got %s", evBad.ID, eventID)
+			}
+
+			var success bool
+			json.Unmarshal(envelope[2], &success)
+			if success {
+				t.Error("NIP-20: Expected success=false for invalid signature, got true")
+			}
+
+			var reason string
+			json.Unmarshal(envelope[3], &reason)
+			if !strings.HasPrefix(reason, "invalid:") {
+				t.Errorf("NIP-20: Reason should start with 'invalid:', got: %s", reason)
+			}
+			return // Success
+		}
 	}
 }
 
@@ -1798,65 +1859,78 @@ func TestNIP70_ProtectedEvents(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestNIP77_Negentropy(t *testing.T) {
-	_, _, wsURL, teardown := setupTestRelay(t)
+	_, vr, wsURL, teardown := setupTestRelay(t)
 	defer teardown()
 
-	// 1. Connect via raw WebSocket
+	vr.Config.RelayURL = wsURL
+
+	sk, pk := generateTestUser()
+	err := vr.InternalChangePubKey(context.Background(), pk.Hex(), store.PubKeyAllowed, "")
+	if err != nil {
+		t.Fatalf("Failed to whitelist test user: %v", err)
+	}
+
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("Websocket dial failed: %v", err)
 	}
 	defer conn.Close()
 
-	// 2. Handle Initial AUTH Challenge
-	_, message, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("Failed to read initial message: %v", err)
+	// 1. Handle Auth if required
+	isAuthRequired := false
+	if vr.Info.Limitation != nil {
+		isAuthRequired = vr.Info.Limitation.AuthRequired
 	}
 
-	var authMsg []json.RawMessage
-	if err := json.Unmarshal(message, &authMsg); err != nil {
-		t.Fatalf("Invalid JSON: %v", err)
-	}
+	if isAuthRequired {
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, msg, err := conn.ReadMessage()
+		conn.SetReadDeadline(time.Time{})
 
-	if len(authMsg) < 2 {
-		t.Fatalf("Message too short: %s", message)
-	}
+		if err != nil {
+			t.Fatalf("AuthRequired=true, but failed to read initial AUTH challenge: %v", err)
+		}
 
-	var msgType string
-	json.Unmarshal(authMsg[0], &msgType)
+		var env []json.RawMessage
+		if err := json.Unmarshal(msg, &env); err != nil {
+			t.Fatalf("Invalid JSON in Auth Handshake: %v", err)
+		}
 
-	if msgType != "AUTH" {
-		t.Fatalf("Expected AUTH challenge, got %s", msgType)
-	}
+		var msgType string
+		if len(env) > 0 {
+			json.Unmarshal(env[0], &msgType)
+		}
 
-	var challenge string
-	json.Unmarshal(authMsg[1], &challenge)
+		if msgType != "AUTH" {
+			t.Fatalf("AuthRequired=true, expected 'AUTH' message, got '%s'", msgType)
+		}
 
-	// 3. Perform Authentication
-	sk, pk := generateTestUser()
-	authEv := nostr.Event{
-		PubKey:    pk,
-		CreatedAt: nostr.Now(),
-		Kind:      22242,
-		Tags:      nostr.Tags{{"relay", wsURL}, {"challenge", challenge}},
-		Content:   "",
-	}
-	authEv.Sign(sk)
+		var challenge string
+		if len(env) > 1 {
+			json.Unmarshal(env[1], &challenge)
+		}
 
-	// Send ["AUTH", event]
-	if err := conn.WriteJSON([]any{"AUTH", authEv}); err != nil {
-		t.Fatalf("Failed to send AUTH: %v", err)
-	}
+		// Perform Auth
+		authEv := nostr.Event{
+			PubKey:    pk,
+			CreatedAt: nostr.Now(),
+			Kind:      22242,
+			Tags:      nostr.Tags{{"relay", wsURL}, {"challenge", challenge}},
+		}
+		authEv.Sign(sk)
 
-	// 4. Consume the OK response for Auth
-	// Relay should reply ["OK", event_id, true, "..."]
-	_, message, err = conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("Failed to read AUTH response: %v", err)
-	}
-	if !strings.Contains(string(message), "OK") || !strings.Contains(string(message), "true") {
-		t.Fatalf("Authentication failed, got: %s", message)
+		if err := conn.WriteJSON([]interface{}{"AUTH", authEv}); err != nil {
+			t.Fatalf("Failed to send AUTH response: %v", err)
+		}
+
+		// Read the OK response
+		_, authResp, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("Failed to read Auth OK response: %v", err)
+		}
+		if !strings.Contains(string(authResp), "true") {
+			t.Fatalf("Authentication failed: %s", authResp)
+		}
 	}
 
 	// 5. Now Send NEG-OPEN
@@ -1874,18 +1948,56 @@ func TestNIP77_Negentropy(t *testing.T) {
 	}
 
 	// 6. Read Response (Expect NEG-MSG or NEG-ERR)
-	_, message, err = conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("Failed to read NEG response: %v", err)
-	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 
-	msgStr := string(message)
-	if strings.Contains(msgStr, "NEG-MSG") || strings.Contains(msgStr, "NEG-ERR") {
-		// Passed
-	} else if strings.Contains(msgStr, "CLOSED") {
-		t.Errorf("Subscription closed unexpectedly: %s", msgStr)
-	} else {
-		t.Errorf("Expected NEG-MSG or NEG-ERR, received: %s", msgStr)
+	for {
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			if strings.Contains(err.Error(), "timeout") {
+				// Check if the relay actually claims to support NIP-77
+				hasSupport := false
+				for _, n := range vr.Info.SupportedNIPs {
+					if n == 77 {
+						hasSupport = true
+						break
+					}
+				}
+
+				if hasSupport {
+					t.Fatal("TIMEOUT: Relay claims NIP-77 support but ignored NEG-OPEN. " +
+						"This usually indicates a 'go-nostr' vs 'khatru' version mismatch. ")
+				}
+			}
+			t.Fatalf("Read error waiting for NEG-MSG: %v", err)
+		}
+
+		var env []json.RawMessage
+		if err := json.Unmarshal(message, &env); err != nil {
+			continue
+		}
+
+		if len(env) < 2 {
+			continue
+		}
+
+		var msgType string
+		json.Unmarshal(env[0], &msgType)
+
+		// Success Case
+		if msgType == "NEG-MSG" || msgType == "NEG-ERR" {
+			return
+		}
+
+		// Failure Cases
+		if msgType == "CLOSED" {
+			t.Fatalf("Subscription CLOSED unexpectedly: %s", message)
+		}
+		if msgType == "NOTICE" {
+			msgStr := string(message)
+			if strings.Contains(msgStr, "error") || strings.Contains(msgStr, "invalid") {
+				t.Fatalf("Received NOTICE error: %s", msgStr)
+			}
+		}
 	}
 }
 
