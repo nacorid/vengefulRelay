@@ -52,8 +52,8 @@ func main() {
 	mux.HandleFunc("/healthz", webHandler.HandleHealthz)
 	mux.HandleFunc("/invoice", webHandler.HandleInvoice)
 	mux.HandleFunc("/check", webHandler.HandleCheck)
-	mux.HandleFunc("/opennode/callback", webHandler.HandleOpenNodeCallback)
-	mux.HandleFunc("/opennode/zaps", webHandler.HandleZaps)
+	mux.HandleFunc("/opennode/callback", webHandler.HandleOpennodeCallback)
+	mux.HandleFunc("/opennode/zaps", webHandler.HandleOpennodeZaps)
 
 	if cfg.CDPClientKey != "" {
 		x402Middleware := payments.SetupMiddleware(cfg, db)

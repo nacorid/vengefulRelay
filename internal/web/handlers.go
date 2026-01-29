@@ -18,7 +18,7 @@ import (
 type Server struct {
 	Config     config.Config
 	Store      *store.Storage
-	LNProvider *lightning.Provider
+	LNProvider lightning.Provider
 	Logger     *slog.Logger
 }
 
@@ -93,7 +93,7 @@ func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
 
-func (s *Server) HandleZaps(w http.ResponseWriter, r *http.Request) {
+func (s *Server) HandleOpennodeZaps(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, _ := io.ReadAll(r.Body)
 	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
@@ -160,7 +160,7 @@ func (s *Server) HandleCheck(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) HandleOpenNodeCallback(w http.ResponseWriter, r *http.Request) {
+func (s *Server) HandleOpennodeCallback(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, _ := io.ReadAll(r.Body)
 	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 

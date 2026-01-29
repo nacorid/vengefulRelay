@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-func NewProvider(url, key string) *Provider {
+func NewProvider(url, key string) Provider {
 	client := &http.Client{Timeout: 10 * time.Second}
-	return &Provider{URL: url, Key: key, client: client}
+	return &Opennode{URL: url, Key: key, client: client}
 }
 
-func (p *Provider) GenerateInvoice(amountSats int64, memo string) (string, string, error) {
+func (p *Opennode) GenerateInvoice(amountSats int64, memo string) (string, string, error) {
 	body := map[string]any{
 		"amount":       amountSats,
 		"description":  memo,
@@ -45,7 +45,7 @@ func (p *Provider) GenerateInvoice(amountSats int64, memo string) (string, strin
 	return res.PaymentRequest, res.PaymentHash, nil
 }
 
-func (p *Provider) CheckPayment(paymentHash string) bool {
+func (p *Opennode) CheckPayment(paymentHash string) bool {
 	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/payments/%s", p.URL, paymentHash), nil)
 	req.Header.Set("Authorization", p.Key)
 

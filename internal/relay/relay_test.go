@@ -65,7 +65,7 @@ func setupTestRelay(t *testing.T) (*httptest.Server, *relay.VengefulRelay, strin
 
 	// 4. Mock Lightning Provider
 	// TODO: Initialize a mock LN provider
-	var ln *lightning.Provider = nil // <--- REPLACE THIS
+	var ln lightning.Provider = nil // <--- REPLACE THIS
 
 	// 5. Initialize Relay
 	// Passing nil logger for cleaner test output

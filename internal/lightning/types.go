@@ -2,7 +2,14 @@ package lightning
 
 import "net/http"
 
-type Provider struct {
+var _ Provider = (*Opennode)(nil)
+
+type Provider interface {
+	GenerateInvoice(amount int64, memo string) (string, string, error)
+	CheckPayment(paymentHash string) bool
+}
+
+type Opennode struct {
 	URL    string
 	Key    string
 	client *http.Client

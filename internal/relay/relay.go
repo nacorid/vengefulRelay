@@ -18,11 +18,11 @@ type VengefulRelay struct {
 	*khatru.Relay
 	Config     config.Config
 	Store      *store.Storage
-	LNProvider *lightning.Provider
+	LNProvider lightning.Provider
 	logger     *slog.Logger
 }
 
-func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *slog.Logger) *VengefulRelay {
+func New(cfg config.Config, st *store.Storage, ln lightning.Provider, logger *slog.Logger) *VengefulRelay {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -91,7 +91,7 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *s
 			vr.paymentPolicy,
 			vr.eventLengthPolicy,
 			vr.proofOfWorkPolicy,
-			vr.timestampPolicy,
+			//vr.timestampPolicy,
 		)
 		r.OnConnect = func(ctx context.Context) { logger.Log(context.Background(), slog.Level(-8), "new client connected") }
 	} else {
@@ -103,7 +103,7 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *s
 			vr.paymentPolicy,
 			vr.eventLengthPolicy,
 			vr.proofOfWorkPolicy,
-			vr.timestampPolicy,
+			//vr.timestampPolicy,
 		)
 	}
 
@@ -128,12 +128,12 @@ func New(cfg config.Config, st *store.Storage, ln *lightning.Provider, logger *s
 		9,
 		11,
 		12,
-		13,
+		//13,
 		15,
 		16,
 		17,
 		20,
-		22,
+		//22,
 		25,
 		28,
 		33,

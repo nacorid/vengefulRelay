@@ -13,7 +13,7 @@ type Config struct {
 	RelayDescription string   `default:"A simple nostr relay written in go" envconfig:"RELAY_DESCRIPTION"`
 	RelayURL         string   `default:"https://relay.vengeful.eu" envconfig:"RELAY_URL"`
 	RelayIcon        string   `default:"https://vengeful.eu/favicon.ico" envconfig:"RELAY_ICON"`
-	MinPowDifficulty int      `default:"20" envconfig:"PROOF_OF_WORK_DIFFICULTY"`
+	MinPowDifficulty int      `default:"0" envconfig:"PROOF_OF_WORK_DIFFICULTY"`
 	ContactEmail     string   `envconfig:"CONTACT_EMAIL"`
 	ListeningAddress string   `default:"0.0.0.0" envconfig:"LISTENING_ADDRESS"`
 	Port             string   `default:"7447" envconfig:"PORT"`
