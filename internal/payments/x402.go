@@ -70,7 +70,6 @@ func SetupMiddleware(cfg config.Config, st *store.Storage) func(http.Handler) ht
 			{Network: svmNetwork, Server: svm.NewExactSvmScheme()},
 		},
 		PaywallConfig: &x402http.PaywallConfig{
-			//CDPClientKey: cfg.CDPClientKey,
 			AppName:    cfg.RelayName,
 			AppLogo:    cfg.RelayIcon,
 			CurrentURL: cfg.RelayURL + "/admission",
@@ -84,7 +83,7 @@ func SetupMiddleware(cfg config.Config, st *store.Storage) func(http.Handler) ht
 	return PaymentMiddlewareFromConfig(mwConfig.Routes, mwConfig)
 }
 
-func handleSettlement(w http.ResponseWriter, r *http.Request, s *x402.SettleResponse, st *store.Storage) {
+func handleSettlement(_ http.ResponseWriter, r *http.Request, s *x402.SettleResponse, st *store.Storage) {
 	pubkey := r.URL.Query().Get("pubkey")
 	if pubkey == "" {
 		return

@@ -26,13 +26,12 @@ type Config struct {
 	FileLogLvl       string   `default:"trace" envconfig:"FILE_LOG_LEVEL"`
 
 	// Lightning
-	OpenNodeApiKey string `envconfig:"OPENNODE_API_KEY"`
+	OpennodeApiKey string `envconfig:"OPENNODE_API_KEY"`
 	AdmissionFee   int64  `default:"100" envconfig:"ADMISSION_FEE"`
 
 	// x402 / CDP
 	CDPAPIKeyName   string `envconfig:"CDP_API_KEY_NAME"`
 	CDPAPIKeySecret string `envconfig:"CDP_API_KEY_SECRET"`
-	CDPClientKey    string `envconfig:"CDP_CLIENT_KEY"`
 	EVMWallet       string `envconfig:"EVM_WALLET"`
 	SVMWallet       string `envconfig:"SVM_WALLET"`
 }

@@ -21,10 +21,10 @@ func (vr *VengefulRelay) authPolicy(ctx context.Context, evt nostr.Event) (bool,
 		return true, "auth-required: please authenticate"
 	}
 	if pubkey != evt.PubKey && evt.Tags.ContainsAny("-", nil) {
-		vr.logger.Debug("auth failed: protected event for other user", "event_pubkey", evt.PubKey, "authed_as", pubkey, "Kind", evt.Kind, "content", evt.Content, "tags", evt.Tags)
+		vr.logger.DebugContext(ctx, "auth failed: protected event for other user", "event_pubkey", evt.PubKey, "authed_as", pubkey, "Kind", evt.Kind, "content", evt.Content, "tags", evt.Tags)
 		return true, "restricted: cannot post protected events for other users"
 	}
-	vr.logger.Debug("auth success", "event_pubkey", evt.PubKey, "authed_as", pubkey, "Kind", evt.Kind, "content", evt.Content, "tags", evt.Tags)
+	vr.logger.DebugContext(ctx, "auth success", "event_pubkey", evt.PubKey, "authed_as", pubkey, "Kind", evt.Kind, "content", evt.Content, "tags", evt.Tags)
 	return false, ""
 }
 
@@ -33,7 +33,7 @@ func (vr *VengefulRelay) debugEventPolicy(ctx context.Context, evt nostr.Event) 
 	if !ok {
 		return false, ""
 	}
-	vr.logger.Debug("event received", "pubkey", pubkey, "event", evt)
+	vr.logger.DebugContext(ctx, "event received", "pubkey", pubkey, "event", evt)
 	return false, ""
 }
 
@@ -42,7 +42,7 @@ func (vr *VengefulRelay) debugFilterPolicy(ctx context.Context, flt nostr.Filter
 	if !ok {
 		return false, ""
 	}
-	vr.logger.Debug("request received", "pubkey", pubkey, "filter", flt)
+	vr.logger.DebugContext(ctx, "request received", "pubkey", pubkey, "filter", flt)
 	return false, ""
 }
 
@@ -51,19 +51,19 @@ func (vr *VengefulRelay) signaturePolicy(ctx context.Context, evt nostr.Event) (
 	if ok {
 		return false, ""
 	}
-	vr.logger.Debug("invalid signature", "event_id", evt.ID, "event_pubkey", evt.PubKey)
+	vr.logger.DebugContext(ctx, "invalid signature", "event_id", evt.ID, "event_pubkey", evt.PubKey)
 	return true, "blocked: invalid signature"
 }
 
 func (vr *VengefulRelay) paymentPolicy(ctx context.Context, evt nostr.Event) (bool, string) {
 	// 1. Check Whitelist
 	if slices.Contains(vr.Config.Whitelist, evt.PubKey.Hex()) {
-		//vr.logger.Debug("whitelisted pubkey", "pubkey", evt.PubKey.Hex())
+		vr.logger.DebugContext(ctx, "whitelisted pubkey", "pubkey", evt.PubKey.Hex())
 		return false, ""
 	}
 
-	if evt.Kind == 62 {
-		//vr.logger.Debug("NIP-62 Vanish event, allowing", "pubkey", evt.PubKey.Hex())
+	if evt.Kind == 62 || (evt.Kind == 4 || evt.Kind == 1059 || evt.Kind == 9734) && evt.Tags.ContainsAny("p", nil) {
+		vr.logger.DebugContext(ctx, "special event kind, allowing", "pubkey", evt.PubKey.Hex(), "kind", evt.Kind)
 		return false, ""
 	}
 
@@ -73,7 +73,7 @@ func (vr *VengefulRelay) paymentPolicy(ctx context.Context, evt nostr.Event) (bo
 		return true, fmt.Sprintf("restricted: %v", err)
 	}
 	if pubkeyState == store.PubKeyAllowed {
-		//vr.logger.Debug("allowed pubkey", "pubkey", evt.PubKey.Hex())
+		vr.logger.DebugContext(ctx, "allowed pubkey", "pubkey", evt.PubKey.Hex())
 		return false, ""
 	}
 	if pubkeyState == store.PubKeyBanned {
@@ -82,16 +82,11 @@ func (vr *VengefulRelay) paymentPolicy(ctx context.Context, evt nostr.Event) (bo
 
 	// 3. Check Database for Payment
 	if vr.Store.IsPubkeyRegistered(evt.PubKey.Hex()) {
-		vr.logger.Debug("paid pubkey", "pubkey", evt.PubKey.Hex())
+		vr.logger.DebugContext(ctx, "paid pubkey", "pubkey", evt.PubKey.Hex())
 		return false, ""
 	}
 
 	if vr.Config.FreeRelay {
-		return false, ""
-	}
-
-	if (evt.Kind == 4 || evt.Kind == 1059) && evt.Tags.ContainsAny("p", nil) {
-		//vr.logger.Debug("payment event kind, allowing", "pubkey", evt.PubKey.Hex(), "kind", evt.Kind)
 		return false, ""
 	}
 
@@ -102,7 +97,7 @@ func (vr *VengefulRelay) paymentPolicy(ctx context.Context, evt nostr.Event) (bo
 func (vr *VengefulRelay) eventLengthPolicy(ctx context.Context, evt nostr.Event) (bool, string) {
 	jsonb, _ := json.Marshal(evt)
 	if len(jsonb) > vr.Config.MaxEventLength {
-		vr.logger.Debug("event too large", "pubkey", evt.PubKey.Hex(), "size", len(jsonb))
+		vr.logger.DebugContext(ctx, "event too large", "pubkey", evt.PubKey.Hex(), "size", len(jsonb))
 		return true, "blocked: event too large"
 	}
 	return false, ""
@@ -114,7 +109,7 @@ func (vr *VengefulRelay) proofOfWorkPolicy(ctx context.Context, evt nostr.Event)
 	}
 	err := nip13.Check(evt.ID, vr.Config.MinPowDifficulty)
 	if err != nil {
-		vr.logger.Debug("pow check failed", "err", err, "event_id", evt.ID)
+		vr.logger.DebugContext(ctx, "pow check failed", "err", err, "event_id", evt.ID)
 		return true, fmt.Sprintf("restricted: nip13 difficulty %d required", vr.Config.MinPowDifficulty)
 	}
 	return false, ""
@@ -123,11 +118,11 @@ func (vr *VengefulRelay) proofOfWorkPolicy(ctx context.Context, evt nostr.Event)
 func (vr *VengefulRelay) timestampPolicy(ctx context.Context, evt nostr.Event) (bool, string) {
 	now := time.Now()
 	if evt.CreatedAt.Time().After(now.Add(15 * time.Minute)) {
-		vr.logger.Debug("event from future", "pubkey", evt.PubKey.Hex(), "created_at", evt.CreatedAt.Time(), "now", now)
+		vr.logger.DebugContext(ctx, "event from future", "pubkey", evt.PubKey.Hex(), "created_at", evt.CreatedAt.Time(), "now", now)
 		return true, "blocked: timestamp in future"
 	}
 	if evt.CreatedAt.Time().Before(now.Add(-48 * time.Hour)) {
-		vr.logger.Debug("event too old", "pubkey", evt.PubKey.Hex(), "created_at", evt.CreatedAt.Time(), "now", now)
+		vr.logger.DebugContext(ctx, "event too old", "pubkey", evt.PubKey.Hex(), "created_at", evt.CreatedAt.Time(), "now", now)
 		return true, "blocked: timestamp too old"
 	}
 	return false, ""

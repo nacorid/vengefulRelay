@@ -24,6 +24,7 @@ const (
 	PubKeyUnknown PubKeyState = iota
 	PubKeyAllowed
 	PubKeyBanned
+	PubKeyAdmin
 )
 
 type Storage struct {
@@ -62,6 +63,7 @@ func Init(databaseURL string) (*Storage, error) {
 			allowed boolean NOT NULL DEFAULT false,
 			banned  boolean NOT NULL DEFAULT false,
 			reason  text,
+			admin   boolean NOT NULL DEFAULT false,
 			CHECK (NOT (allowed AND banned))
 		);
 	`)
@@ -177,13 +179,14 @@ func (s *Storage) QueryPubkeyState(pubkey string) (nostr.PubKey, PubKeyState, st
 		allowed   bool
 		banned    bool
 		reason    sql.NullString
+		admin     bool
 	)
 
 	err := s.DB.QueryRow(`
-		SELECT pubkey, allowed, banned, reason
+		SELECT pubkey, allowed, banned, reason, admin
 		FROM known_pubkeys
 		WHERE pubkey = $1
-	`, pubkey).Scan(&pubkeyHex, &allowed, &banned, &reason)
+	`, pubkey).Scan(&pubkeyHex, &allowed, &banned, &reason, &admin)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -195,6 +198,8 @@ func (s *Storage) QueryPubkeyState(pubkey string) (nostr.PubKey, PubKeyState, st
 	pk := nostr.MustPubKeyFromHex(pubkeyHex)
 
 	switch {
+	case admin:
+		return pk, PubKeyAdmin, "", nil
 	case banned:
 		return pk, PubKeyBanned, reason.String, nil
 	case allowed:
@@ -211,6 +216,12 @@ func (s *Storage) QueryAllPubkeyStates(state PubKeyState) ([]nostr.PubKey, []str
 	)
 
 	switch state {
+	case PubKeyAdmin:
+		rows, err = s.DB.Query(`
+		SELECT pubkey, reason
+		FROM known_pubkeys
+		WHERE admin = true
+		`)
 	case PubKeyAllowed:
 		rows, err = s.DB.Query(`
 			SELECT pubkey, reason
@@ -274,26 +285,34 @@ func (s *Storage) RegisterPayment(pubkey, txId, asset, amount, network, payer, f
 }
 
 func (s *Storage) ChangePubKeyState(ctx context.Context, pubkey string, pubkeyState PubKeyState, reason string) error {
-	var allowed, banned bool
+	var allowed, banned, admin bool
 	switch pubkeyState {
+	case PubKeyAdmin:
+		allowed = true
+		banned = false
+		admin = true
 	case PubKeyAllowed:
 		allowed = true
 		banned = false
+		admin = false
 	case PubKeyBanned:
 		allowed = false
 		banned = true
+		admin = false
 	default:
 		allowed = false
 		banned = false
+		admin = false
 	}
 	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO known_pubkeys (pubkey, allowed, banned, reason) VALUES ($1, $2, $3, $4)
+		`INSERT INTO known_pubkeys (pubkey, allowed, banned, reason, admin) VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (pubkey) DO UPDATE
 		SET
 			allowed  = EXCLUDED.allowed,
 			banned   = EXCLUDED.banned,
-			reason   = EXCLUDED.reason`,
-		pubkey, allowed, banned, reason,
+			reason   = EXCLUDED.reason,
+			admin    = EXCLUDED.admin`,
+		pubkey, allowed, banned, reason, admin,
 	)
 	return err
 }

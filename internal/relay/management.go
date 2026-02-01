@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/khatru"
@@ -12,7 +13,14 @@ import (
 
 func (vr *VengefulRelay) AllowPubKey(ctx context.Context, pubkey nostr.PubKey, reason string) error {
 	key, ok := khatru.GetAuthed(ctx)
-	if !ok || key != *vr.Info.PubKey {
+	if !ok {
+		return fmt.Errorf("Not authorized")
+	}
+	admins, _, err := vr.Store.QueryAllPubkeyStates(store.PubKeyAdmin)
+	if err != nil {
+		return fmt.Errorf("Internal server error")
+	}
+	if !slices.Contains(admins, key) || key != *vr.Info.PubKey {
 		return fmt.Errorf("Not authorized")
 	}
 	return vr.InternalChangePubKey(ctx, pubkey.Hex(), store.PubKeyAllowed, reason)
@@ -24,18 +32,62 @@ func (vr *VengefulRelay) InternalChangePubKey(ctx context.Context, pubkey string
 
 func (vr *VengefulRelay) BanPubKey(ctx context.Context, pubkey nostr.PubKey, reason string) error {
 	key, ok := khatru.GetAuthed(ctx)
-	if !ok || key != *vr.Info.PubKey {
+	if !ok {
+		return fmt.Errorf("Not authorized")
+	}
+	admins, _, err := vr.Store.QueryAllPubkeyStates(store.PubKeyAdmin)
+	if err != nil {
+		return fmt.Errorf("Internal server error")
+	}
+	if !slices.Contains(admins, key) || key != *vr.Info.PubKey {
 		return fmt.Errorf("Not authorized")
 	}
 	return vr.InternalChangePubKey(ctx, pubkey.Hex(), store.PubKeyBanned, reason)
 }
 
+func (vr *VengefulRelay) MakeAdmin(ctx context.Context, pubkey nostr.PubKey, reason string) error {
+	key, ok := khatru.GetAuthed(ctx)
+	if !ok {
+		return fmt.Errorf("Not authorized")
+	}
+	admins, _, err := vr.Store.QueryAllPubkeyStates(store.PubKeyAdmin)
+	if err != nil {
+		return fmt.Errorf("Internal server error")
+	}
+	if !slices.Contains(admins, key) || key != *vr.Info.PubKey {
+		return fmt.Errorf("Not authorized")
+	}
+	return vr.InternalChangePubKey(ctx, pubkey.Hex(), store.PubKeyAdmin, reason)
+}
+
 func (vr *VengefulRelay) ListAllowedPubKeys(ctx context.Context) ([]nip86.PubKeyReason, error) {
 	key, ok := khatru.GetAuthed(ctx)
-	if !ok || key != *vr.Info.PubKey {
+	if !ok {
+		return nil, fmt.Errorf("Not authorized")
+	}
+	admins, _, err := vr.Store.QueryAllPubkeyStates(store.PubKeyAdmin)
+	if err != nil {
+		return nil, fmt.Errorf("Internal server error")
+	}
+	if !slices.Contains(admins, key) || key != *vr.Info.PubKey {
 		return nil, fmt.Errorf("Not authorized")
 	}
 	return vr.InternalListPubKeys(store.PubKeyAllowed)
+}
+
+func (vr *VengefulRelay) ListAdminPubKeys(ctx context.Context) ([]nip86.PubKeyReason, error) {
+	key, ok := khatru.GetAuthed(ctx)
+	if !ok {
+		return nil, fmt.Errorf("Not authorized")
+	}
+	admins, _, err := vr.Store.QueryAllPubkeyStates(store.PubKeyAdmin)
+	if err != nil {
+		return nil, fmt.Errorf("Internal server error")
+	}
+	if !slices.Contains(admins, key) || key != *vr.Info.PubKey {
+		return nil, fmt.Errorf("Not authorized")
+	}
+	return vr.InternalListPubKeys(store.PubKeyAdmin)
 }
 
 func (vr *VengefulRelay) InternalListPubKeys(state store.PubKeyState) ([]nip86.PubKeyReason, error) {
@@ -57,7 +109,14 @@ func (vr *VengefulRelay) InternalListPubKeys(state store.PubKeyState) ([]nip86.P
 
 func (vr *VengefulRelay) ListBannedPubKeys(ctx context.Context) ([]nip86.PubKeyReason, error) {
 	key, ok := khatru.GetAuthed(ctx)
-	if !ok || key != *vr.Info.PubKey {
+	if !ok {
+		return nil, fmt.Errorf("Not authorized")
+	}
+	admins, _, err := vr.Store.QueryAllPubkeyStates(store.PubKeyAdmin)
+	if err != nil {
+		return nil, fmt.Errorf("Internal server error")
+	}
+	if !slices.Contains(admins, key) || key != *vr.Info.PubKey {
 		return nil, fmt.Errorf("Not authorized")
 	}
 	return vr.InternalListPubKeys(store.PubKeyBanned)

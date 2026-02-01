@@ -95,7 +95,7 @@ func New(cfg config.Config, st *store.Storage, ln lightning.Provider, logger *sl
 		)
 		r.OnConnect = func(ctx context.Context) { logger.Log(context.Background(), slog.Level(-8), "new client connected") }
 	} else {
-		r.OnRequest = policies.SeqRequest(policies.AntiSyncBots, policies.NoEmptyFilters)
+		//r.OnRequest = policies.SeqRequest(policies.AntiSyncBots, policies.NoEmptyFilters)
 		r.OnEvent = policies.SeqEvent(
 			vr.authPolicy,
 			vr.nip62Policy,
