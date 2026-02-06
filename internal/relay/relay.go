@@ -114,7 +114,7 @@ func New(cfg config.Config, st *store.Storage, ln lightning.Provider, logger *sl
 	r.UseEventstore(st, 1000)
 	r.OnEventSaved = vr.afterEventStored
 
-	r.Negentropy = true
+	//r.Negentropy = true
 
 	r.ManagementAPI.AllowPubKey = vr.AllowPubKey
 	r.ManagementAPI.BanPubKey = vr.BanPubKey
@@ -123,24 +123,16 @@ func New(cfg config.Config, st *store.Storage, ln lightning.Provider, logger *sl
 
 	r.Info.SupportedNIPs = []any{
 		1,
-		2,
 		4,
 		9,
 		11,
-		12,
 		//13,
 		15,
-		16,
 		17,
-		20,
-		//22,
 		25,
-		28,
-		33,
 		40,
 		42,
 		45,
-		51,
 		56,
 		62,
 		70,

@@ -62,7 +62,10 @@ func (vr *VengefulRelay) paymentPolicy(ctx context.Context, evt nostr.Event) (bo
 		return false, ""
 	}
 
-	if evt.Kind == 62 || (evt.Kind == 4 || evt.Kind == 1059 || evt.Kind == 9734) && evt.Tags.ContainsAny("p", nil) {
+	if evt.Kind == 62 ||
+		(evt.Kind == 1021 && evt.Tags.ContainsAny("e", nil)) ||
+		(evt.Kind == 4 || evt.Kind == 1059 || evt.Kind == 1942 || evt.Kind == 9735) && evt.Tags.ContainsAny("p", nil) ||
+		(evt.Kind == 7 && evt.Tags.ContainsAny("p", nil) && evt.Tags.ContainsAny("e", nil)) {
 		vr.logger.DebugContext(ctx, "special event kind, allowing", "pubkey", evt.PubKey.Hex(), "kind", evt.Kind)
 		return false, ""
 	}
